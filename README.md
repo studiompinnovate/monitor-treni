@@ -10,7 +10,7 @@ Completamente gestibile tramite **Telegram con pulsanti interattivi touch**, sis
 
 ### 1. 🎟️ Link di Invito Monouso (Accesso Singolo)
 * Solo l'amministratore (il proprietario del bot) può creare link di invito tramite il pulsante **`🎟️ Genera Link Invito Amico (Monouso)`** o il comando `/invito`.
-* Il bot genera un link univoco: `https://t.me/Prezzotrenibot?start=inv_XXXXXX`.
+* Il bot genera un link univoco: `https://t.me/prezzitrenibot?start=inv_XXXXXX`.
 * **Accesso Singolo Impossibile da Condividere:** il link funziona per **1 sola persona**. Non appena l'amico clicca e preme **Avvia**, il codice di invito viene disattivato per sempre. Se inoltrato ad altri, il bot respingerà i nuovi tentativi con `Accesso Negato`.
 * Notifiche automatiche all'Admin all'ingresso di ogni nuovo amico autorizzato.
 * Notifiche allarmi posti/prezzi trasmesse in **broadcast a tutti gli amici autorizzati**.

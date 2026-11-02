@@ -91,7 +91,7 @@ def run_bot_daemon():
     notifier = Notifier(config)
 
     telegram_offset = None
-    tg_token = config.get("notifiche_telegram", {}).get("bot_token", "").strip()
+    tg_token = os.environ.get("TELEGRAM_BOT_TOKEN") or config.get("notifiche_telegram", {}).get("bot_token", "").strip()
 
     # Inizializza offset Telegram
     if tg_token:

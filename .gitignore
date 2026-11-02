@@ -2,5 +2,6 @@ __pycache__/
 *.pyc
 *.log
 last_state.json
+config.local.json
 .system_generated/
 .gemini/

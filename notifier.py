@@ -8,6 +8,7 @@ Supporta:
 - Log formattati su console
 """
 
+import os
 import sys
 import subprocess
 import requests
@@ -72,7 +73,7 @@ class Notifier:
         if not self.tg_cfg.get("abilitato", False):
             return False
 
-        token = self.tg_cfg.get("bot_token", "").strip()
+        token = os.environ.get("TELEGRAM_BOT_TOKEN") or self.tg_cfg.get("bot_token", "").strip()
         if not token or "INSERISCI" in token:
             return False
 

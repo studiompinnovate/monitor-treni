@@ -1,8 +1,9 @@
 """
-Client API per Trenitalia e ViaggiaTreno.
+Client API per Trenitalia, ViaggiaTreno e Italo Live.
 Interagisce con:
-1. LeFrecce BFF API (disponibilità biglietti, offerte, posti liberi, prezzi)
-2. ViaggiaTreno API (ritardo in tempo reale, binario, fermate)
+1. LeFrecce BFF API (disponibilità biglietti, offerte, posti liberi, prezzi Trenitalia)
+2. ViaggiaTreno API (ritardo in tempo reale Trenitalia, binario, fermate)
+3. Italo In Viaggio API (stato treno e ritardi per treni Italo)
 """
 
 import datetime
@@ -13,6 +14,7 @@ from typing import Dict, Any, List, Optional
 class TrenitaliaClient:
     BFF_BASE_URL = "https://www.lefrecce.it/Channels.Website.BFF.WEB/website"
     VIAGGIATRENO_URL = "http://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno"
+    ITALO_LIVE_URL = "https://italoinviaggio.italotreno.com/api/RicercaTrenoService"
 
     def __init__(self, timeout: int = 15):
         self.timeout = timeout
@@ -109,7 +111,6 @@ class TrenitaliaClient:
             dep_raw = sol.get("departureTime", "")
             arr_raw = sol.get("arrivalTime", "")
 
-            # Controlla che appartenga alla data richiesta
             if not dep_raw.startswith(date_str):
                 continue
 
@@ -128,7 +129,7 @@ class TrenitaliaClient:
                 train_descriptions.append(f"{cat} {num}".strip())
 
             full_desc = " + ".join(train_descriptions)
-            primary_num = str(trains[-1].get("name", "")).strip() if not is_direct else str(trains[0].get("name", "")).strip()
+            primary_num = str(trains[0].get("name", "")).strip() if is_direct else str(trains[-1].get("name", "")).strip()
 
             key = f"{dep_time}_{full_desc}"
             if key in seen_train_keys:
@@ -144,7 +145,7 @@ class TrenitaliaClient:
                 "durata": sol.get("duration", "N/D"),
                 "descrizione_treni": full_desc,
                 "numero_treno_principale": primary_num,
-                "categoria_principale": trains[-1].get("trainCategory", "Treno") if not is_direct else trains[0].get("trainCategory", "Treno"),
+                "categoria_principale": trains[0].get("trainCategory", "Treno") if is_direct else trains[-1].get("trainCategory", "Treno"),
                 "diretto": is_direct,
                 "num_cambi": len(trains) - 1,
                 "prezzo_minimo": price_val,
@@ -162,12 +163,14 @@ class TrenitaliaClient:
     ) -> Optional[Dict[str, Any]]:
         """
         Estrae le informazioni dettagliate sul treno cercato (es. 757)
-        inclusi i singoli servizi (Posto a sedere, Cuccetta, Vagone letto)
+        inclusi i singoli servizi specifici di quel treno (es. Posto a sedere, Cuccetta, Vagone letto)
         e il numero di posti disponibili per ciascuno.
+        Evita di mescolare i servizi di altri treni in caso di soluzioni con cambi.
         """
         if not solutions_data:
             return None
 
+        target_train_number = str(target_train_number).strip()
         solutions = solutions_data.get("solutions", [])
         for item in solutions:
             sol = item.get("solution", {})
@@ -175,11 +178,13 @@ class TrenitaliaClient:
             train_names = [str(t.get("name", "")).strip() for t in trains]
 
             if target_train_number in train_names:
-                # Estraiamo i dettagli principali
+                target_idx = train_names.index(target_train_number)
+                target_train_obj = trains[target_idx]
+                treno_cat = target_train_obj.get("trainCategory") or target_train_obj.get("denomination", "Treno")
+
+                # Formattazione orari
                 dep_raw = sol.get("departureTime", "")
                 arr_raw = sol.get("arrivalTime", "")
-                
-                # Formattazione orari
                 dep_formatted = dep_raw[11:16] if len(dep_raw) >= 16 else dep_raw
                 arr_formatted = arr_raw[11:16] if len(arr_raw) >= 16 else arr_raw
 
@@ -187,37 +192,64 @@ class TrenitaliaClient:
                 status = sol.get("status", "SCONOSCIUTO")
                 duration = sol.get("duration", "N/D")
 
-                # Analisi dettagliata servizi e offerte
-                parsed_services = []
+                # Seleziona la grid specifica del treno cercato
                 grids = item.get("grids", [])
-                for grid in grids:
-                    for srv in grid.get("services", []):
+                target_grid = None
+                if len(grids) == len(trains) and target_idx < len(grids):
+                    target_grid = grids[target_idx]
+                elif grids:
+                    target_grid = grids[0]
+
+                # Raggruppa le offerte per ogni servizio unico
+                parsed_services = []
+                if target_grid:
+                    for srv in target_grid.get("services", []):
                         s_name = srv.get("name", "Servizio")
                         s_group = srv.get("groupName", "")
+
+                        max_seats = 0
+                        min_srv_price = None
+                        srv_status = "SOLD_OUT"
                         offers_list = []
 
                         for off in srv.get("offers", []):
                             off_name = off.get("name", "Offerta")
                             off_status = off.get("status", "N/D")
-                            avail_amount = off.get("availableAmount", 0)
-                            price_val = off.get("price", {}).get("amount") if off.get("price") else None
+                            avail = off.get("availableAmount", 0)
+                            p_val = off.get("price", {}).get("amount") if off.get("price") else None
+
+                            if avail > max_seats:
+                                max_seats = avail
+                            if off_status == "SALEABLE":
+                                srv_status = "SALEABLE"
+                            if p_val is not None:
+                                if min_srv_price is None or p_val < min_srv_price:
+                                    min_srv_price = p_val
 
                             offers_list.append({
                                 "nome_offerta": off_name,
                                 "stato": off_status,
-                                "posti_disponibili": avail_amount,
-                                "prezzo": price_val
+                                "posti_disponibili": avail,
+                                "prezzo": p_val
                             })
 
                         parsed_services.append({
                             "servizio": s_name,
                             "gruppo": s_group,
+                            "stato": srv_status,
+                            "posti_disponibili": max_seats,
+                            "prezzo_minimo": min_srv_price,
                             "offerte": offers_list
                         })
 
+                tutti_i_nomi = [f"{t.get('trainCategory', '')} {t.get('name', '')}".strip() for t in trains]
+                desc_tratta = " + ".join(tutti_i_nomi) if len(trains) > 1 else f"{treno_cat} {target_train_number}"
+
                 return {
                     "treno_numero": target_train_number,
-                    "treno_categoria": trains[0].get("trainCategory", "InterCityNotte") if trains else "InterCityNotte",
+                    "treno_categoria": treno_cat,
+                    "descrizione_soluzione": desc_tratta,
+                    "num_cambi": len(trains) - 1,
                     "origine": sol.get("origin", "Torino Porta Nuova"),
                     "destinazione": sol.get("destination", "Termoli"),
                     "orario_partenza": dep_formatted,
@@ -231,46 +263,78 @@ class TrenitaliaClient:
 
         return None
 
+    def get_italo_live(self, train_number: str) -> Optional[Dict[str, Any]]:
+        """Recupera lo stato live di un treno Italo da Italo In Viaggio."""
+        url = f"{self.ITALO_LIVE_URL}?treno={train_number}"
+        try:
+            r = requests.get(url, timeout=self.timeout)
+            if r.status_code == 200:
+                data = r.json()
+                ts = data.get("TrainSchedule", {})
+                if ts and ts.get("TrainNumber"):
+                    delay_val = ts.get("DistruptionMin")
+                    try:
+                        ritardo_min = int(delay_val) if delay_val is not None else 0
+                    except (ValueError, TypeError):
+                        ritardo_min = 0
+
+                    return {
+                        "vettore": "Italo",
+                        "numero": str(ts.get("TrainNumber")),
+                        "origine": f"{ts.get('DepartureStationDescription', 'N/D')} ({ts.get('DepartureDate', '')})",
+                        "destinazione": f"{ts.get('ArrivalStationDescription', 'N/D')} ({ts.get('ArrivalDate', '')})",
+                        "ritardo": ritardo_min,
+                        "stazione_ultimo_rilevamento": ts.get("LastPassageStationDescription") or "--",
+                        "ora_ultimo_rilevamento": ts.get("LastPassageTime") or "--",
+                        "binario_effettivo_partenza": None
+                    }
+            return None
+        except Exception:
+            return None
+
     def get_viaggiatreno_live(self, train_number: str = "757", origin_code: str = "S00219") -> Optional[Dict[str, Any]]:
         """
-        Recupera i dati in tempo reale da ViaggiaTreno per il treno odierno:
-        - Ritardo in minuti
-        - Stazione ultimo rilevamento
-        - Orario e binario di partenza/arrivo
+        Recupera i dati in tempo reale da ViaggiaTreno per il treno odierno.
+        Se non trova il treno o se è un treno Italo, interpella Italo In Viaggio.
         """
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept": "*/*"
         }
 
-        # 1. Trova l'id univoco del treno odierno
-        auto_url = f"{self.VIAGGIATRENO_URL}/cercaNumeroTrenoTrenoAutocomplete/{train_number}"
+        # Controllo se è un treno Italo
+        train_str = str(train_number).strip()
+        if train_str.startswith("99") or train_str.startswith("81") or len(train_str) == 4 and train_str[0] in ("8", "9"):
+            italo_data = self.get_italo_live(train_str)
+            if italo_data:
+                return italo_data
+
+        auto_url = f"{self.VIAGGIATRENO_URL}/cercaNumeroTrenoTrenoAutocomplete/{train_str}"
         try:
             r = requests.get(auto_url, headers=headers, timeout=self.timeout)
             if r.status_code != 200 or not r.text.strip():
-                return None
+                # Fallback tentativo Italo
+                return self.get_italo_live(train_str)
 
-            # Es: 757 - TORINO PORTA NUOVA - 02/11/26|757-S00219-1793574000000
             line = r.text.strip().split("\n")[0]
             parts = line.split("|")
             if len(parts) < 2:
-                return None
+                return self.get_italo_live(train_str)
 
             train_id = parts[1].strip()
-            # 2. Richiedi andamento del treno
-            # URL formato: /andamentoTreno/{originCode}/{trainNumber}/{timestamp}
             subparts = train_id.split("-")
             if len(subparts) == 3:
                 num, orig, ts = subparts
                 andamento_url = f"{self.VIAGGIATRENO_URL}/andamentoTreno/{orig}/{num}/{ts}"
             else:
-                andamento_url = f"{self.VIAGGIATRENO_URL}/andamentoTreno/{origin_code}/{train_number}"
+                andamento_url = f"{self.VIAGGIATRENO_URL}/andamentoTreno/{origin_code}/{train_str}"
 
             r2 = requests.get(andamento_url, headers=headers, timeout=self.timeout)
             if r2.status_code == 200:
                 data = r2.json()
                 return {
-                    "numero": train_number,
+                    "vettore": "Trenitalia",
+                    "numero": train_str,
                     "origine": data.get("origine"),
                     "destinazione": data.get("destinazione"),
                     "ritardo": data.get("ritardo", 0),
@@ -281,7 +345,7 @@ class TrenitaliaClient:
                     "in_stazione": data.get("inStazione", False),
                     "non_partito": data.get("nonPartito", False)
                 }
-            return None
+
+            return self.get_italo_live(train_str)
         except Exception as e:
-            print(f"Errore ViaggiaTreno live: {e}")
-            return None
+            return self.get_italo_live(train_str)

@@ -12,15 +12,15 @@
   "monitoraggio": {
     "attivo": true,
     "intervallo_minuti": 30,
-    "notifica_ogni_controllo": false,
-    "notifica_solo_su_variazioni": true,
-    "avviso_sotto_soglia_posti": 5,
+    "notifica_ogni_controllo": true,
+    "notifica_solo_su_variazioni": false,
+    "avviso_sotto_soglia_posti": 10,
     "suono_avviso": true,
     "notifiche_windows": true
   },
   "notifiche_telegram": {
     "abilitato": true,
-    "bot_token": "9180138991:AAGdGTBtdF1AgjDD2eXJSNr1LwLsgz_x0Fs",
+    "bot_token": "INSERISCI_QUI_IL_BOT_TOKEN",
     "chat_id": "512549882"
   },
   "sicurezza": {
@@ -29,7 +29,7 @@
       "512549882"
     ],
     "inviti_attivi": {},
-    "blocco_altri_utenti": true
+    "blocco_altri_utenti": false
   },
   "notifiche_discord": {
     "abilitato": false,
