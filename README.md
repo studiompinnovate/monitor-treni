@@ -1,70 +1,70 @@
-# 🚆 Bot Monitor Trenitalia 24/7 (Telegram & Cloud Ready)
+# 🚆 Bot Monitor Trenitalia Pro (Multi-Tratta & Inviti Monouso)
 
-Bot in Python per monitorare la disponibilità dei posti, aperture delle vendite e variazioni di prezzo dei treni **Trenitalia** (incluso l'**Intercity Notte 757** Torino ➔ Termoli).
+Bot avanzato in Python per il monitoraggio della disponibilità dei posti, delle aperture vendite e delle variazioni di prezzo dei treni **Trenitalia** su qualsiasi tratta nazionale.
 
-Progettato con **controllo completo da Telegram** e pronto per l'hosting continuo **24 ore su 24 gratuito su Render.com** (o locale su PC).
-
----
-
-## ✨ Caratteristiche Principali
-
-* 📱 **Controllo Totale da Telegram:**
-  * **Scegli giorno e treno:** Invia una data (es. `21/12/2026`) per ricevere la lista di tutti i treni della giornata con pulsanti touch `[🎯 Seleziona Treno]`.
-  * **Riepilogo Dettagliato Posti:** Mostra posti a sedere, cuccette 4 posti (promiscuo/donna), vagoni letto e prezzi aggiornati in 2 secondi.
-  * **Gestione Frequenza:** Cambia l'intervallo dei controlli (10, 15, 30 o 60 min) con un tap.
-  * **Pausa e Ripresa:** Metti in pausa o riavvia i controlli quando vuoi.
-  * **ViaggiaTreno Live:** Verifica ritardi e binari in tempo reale.
-* 🛡️ **Accesso Privato Esclusivo:** Solo il proprietario (riconosciuto al primo avvio) può interagire con il bot; gli estranei vengono respinti con `Accesso Negato`.
-* 🔔 **Allarmi Intelligenti:** Notifiche push automatiche se si libera un posto prima esaurito, se i posti scendono sotto soglia di emergenza (es. $\le 5$) o se cambia il prezzo base.
-* ☁️ **Deploy Cloud 24/7 (Render):** Include server web leggero con auto-ping keep-alive per funzionare a computer spento senza andare in standby.
+Completamente gestibile tramite **Telegram con pulsanti interattivi touch**, sistema di **link di invito monouso ad accesso singolo** per gli amici, e pronto per l'hosting continuo **24 ore su 24 gratuito su Render.com**.
 
 ---
 
-## 📂 Struttura del Progetto
+## 🌟 Nuove Funzionalità Pro
+
+### 1. 🎟️ Link di Invito Monouso (Accesso Singolo)
+* Solo l'amministratore (il proprietario del bot) può creare link di invito tramite il pulsante **`🎟️ Genera Link Invito Amico (Monouso)`** o il comando `/invito`.
+* Il bot genera un link univoco: `https://t.me/Prezzotrenibot?start=inv_XXXXXX`.
+* **Accesso Singolo Impossibile da Condividere:** il link funziona per **1 sola persona**. Non appena l'amico clicca e preme **Avvia**, il codice di invito viene disattivato per sempre. Se inoltrato ad altri, il bot respingerà i nuovi tentativi con `Accesso Negato`.
+* Notifiche automatiche all'Admin all'ingresso di ogni nuovo amico autorizzato.
+* Notifiche allarmi posti/prezzi trasmesse in **broadcast a tutti gli amici autorizzati**.
+
+### 2. 🚉 Gestione Multi-Tratta & Scelta Libera ("Fai il Pro")
+Tramite il pulsante **`🚉 Cambia Tratta / Ritorno`** (o comando `/tratta`):
+* **Tratte Rapide Preconfigurate (1 tap):**
+  * 🚆 **Torino Porta Nuova ➔ Termoli** (Andata)
+  * 🚆 **Termoli ➔ Torino Porta Nuova** (Ritorno)
+  * 🚅 **Torino Porta Nuova ➔ Benevento**
+  * 🚅 **Benevento ➔ Torino Porta Nuova** (Ritorno)
+* **🔄 Inverti Direzione (Andata ⇄ Ritorno):** Inverte istantaneamente la partenza e l'arrivo della tratta attiva con un solo tocco!
+* **🗺️ Scelta Libera di Qualsiasi Stazione d'Italia:**
+  * Puoi scrivere qualsiasi città (es. *Milano, Roma, Bologna, Firenze, Napoli, Benevento, Bari, Palermo, ecc.*).
+  * Il bot ricerca le stazioni ufficiali in tempo reale e configura la nuova tratta!
+
+### 3. 🔍 Scegli Giorno & Treno Interattivo
+* Invia una data (es. `21/12/2026` o tocca i pulsanti rapidi) per visualizzare tutti i treni della giornata con orari, tipo e prezzo.
+* Clicca su **`[🎯 Seleziona Treno]`** per avviare il monitoraggio automatico di quel treno ogni 30 minuti!
+
+### 4. 📊 Riepilogo Posti & Cuccette
+* Visualizza posti a sedere, cuccette 4 posti (promiscuo e donna), vagoni letto e prezzi base aggiornati in tempo reale.
+
+---
+
+## 📁 Struttura File
 
 ```text
-├── server_render.py      # Server Web con auto-ping 24/7 per il deploy su Render.com
-├── monitor_treni.py       # Motore principale di monitoraggio e ascolto Telegram
-├── trenitalia_client.py   # Client HTTP per le API ufficiali LeFrecce e ViaggiaTreno
-├── notifier.py            # Gestione notifiche (Telegram, Windows Toast, Audio)
-├── config.json            # Configurazione (token bot, tratte, soglie e preferenze)
-├── requirements.txt       # Dipendenze Python (requests)
-├── render.yaml            # Configurazione Blueprint per Render.com
-├── avvia_bot.bat          # Launcher rapido per Windows con menu interattivo
-├── carica_su_github.bat   # Script per caricamento su GitHub
+├── server_render.py      # Server Web con auto-ping 24/7 per Render.com
+├── monitor_treni.py       # Motore Telegram con inviti monouso e multi-tratta
+├── trenitalia_client.py   # Client API LeFrecce e ViaggiaTreno
+├── notifier.py            # Notifiche broadcast a tutti gli utenti autorizzati
+├── config.json            # Configurazione e registro inviti attivi
+├── requirements.txt       # requests>=2.31.0
+├── render.yaml            # Blueprint di Render
 ├── LICENSE                # Licenza MIT
-└── README.md              # Documentazione del progetto
+└── README.md              # Documentazione
 ```
 
 ---
 
-## ☁️ Deploy su Render.com (24/7 a PC Spento)
+## 💬 Comandi Rapidi su Telegram
 
-1. Collega il repository a **[Render.com](https://dashboard.render.com)**.
-2. Clicca su **New +** ➔ **Web Service**.
-3. Seleziona questo repository.
-4. Render leggerà automaticamente il file `render.yaml` e `server_render.py`.
-5. Clicca su **Create Web Service**: il bot sarà operativo nel cloud in 60 secondi!
-
----
-
-## 💻 Esecuzione in Locale su PC (Windows)
-
-Fai doppio clic sul file **`avvia_bot.bat`** sul Desktop per aprire il menu rapido:
-* `[1]` Avvia monitoraggio continuo ogni 30 minuti
-* `[2]` Controllo istantaneo singolo
-* `[3]` Prova notifiche
-* `[4]` Stato ViaggiaTreno in tempo reale
-* `[5]` Configurazione guidata Telegram
-
-Oppure da terminale:
-```bash
-pip install -r requirements.txt
-python monitor_treni.py
-```
+* `/menu` o `/start` : Mostra il pannello di controllo touch
+* `/invito` : Genera un nuovo link di invito monouso per un amico (solo Admin)
+* `/utenti` : Elenco di tutti gli utenti autorizzati (solo Admin)
+* `/tratta` : Menu di selezione tratta (rapida, ritorno, swap o libera)
+* `/stato` : Situazione posti e prezzi del treno attuale
+* `/cerca [data]` : Ricerca treni per una data (es: `/cerca 21/12/2026`)
+* `/frequenza` : Modifica intervallo tra i controlli (10, 15, 30, 60 min)
+* `/pausa` / `/riprendi` : Sospende o riattiva il monitoraggio
+* `/live` : Ritardo e binario in tempo reale (ViaggiaTreno)
 
 ---
 
-## 📄 Licenza
-
-Rilasciato sotto licenza [MIT](LICENSE). Realizzato per uso personale e di studio.
+## ☁️ Deploy su Render.com (24/7 Gratis)
+Basta collegare il repository GitHub su **Render.com** (Web Service, runtime Python, startCommand `python server_render.py`). L'auto-ping integrato manterrà il servizio sveglio 24 ore su 24 senza che tu debba tenere il PC acceso.

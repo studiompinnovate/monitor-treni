@@ -25,6 +25,10 @@
   },
   "sicurezza": {
     "admin_chat_id": "512549882",
+    "utenti_autorizzati": [
+      "512549882"
+    ],
+    "inviti_attivi": {},
     "blocco_altri_utenti": true
   },
   "notifiche_discord": {
