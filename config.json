@@ -1,0 +1,34 @@
+{
+  "treno": {
+    "numero": "757",
+    "categoria": "InterCityNotte",
+    "stazione_partenza": "Torino Porta Nuova",
+    "id_partenza": 830000219,
+    "stazione_arrivo": "Termoli",
+    "id_arrivo": 830011019,
+    "data_viaggio": "2026-12-21",
+    "orario_partenza_previsto": "20:50"
+  },
+  "monitoraggio": {
+    "attivo": true,
+    "intervallo_minuti": 30,
+    "notifica_ogni_controllo": false,
+    "notifica_solo_su_variazioni": true,
+    "avviso_sotto_soglia_posti": 5,
+    "suono_avviso": true,
+    "notifiche_windows": true
+  },
+  "notifiche_telegram": {
+    "abilitato": true,
+    "bot_token": "9180138991:AAGdGTBtdF1AgjDD2eXJSNr1LwLsgz_x0Fs",
+    "chat_id": "512549882"
+  },
+  "sicurezza": {
+    "admin_chat_id": "512549882",
+    "blocco_altri_utenti": true
+  },
+  "notifiche_discord": {
+    "abilitato": false,
+    "webhook_url": ""
+  }
+}
