@@ -26,9 +26,18 @@
   "sicurezza": {
     "admin_chat_id": "512549882",
     "utenti_autorizzati": [
-      "512549882"
+      "512549882",
+      "5372272659"
     ],
-    "inviti_attivi": {},
+    "inviti_attivi": {
+      "inv_d99d7b": {
+        "creato_il": "2026-11-02 15:56:10",
+        "creato_da": "SiuM",
+        "usato": true,
+        "usato_da": "Gianpio (ID: 5372272659)",
+        "data_uso": "2026-11-02 15:56:56"
+      }
+    },
     "blocco_altri_utenti": false
   },
   "notifiche_discord": {
