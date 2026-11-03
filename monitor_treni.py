@@ -215,8 +215,109 @@ def build_telegram_summary(train_data: Dict[str, Any], travel_date: str) -> str:
     return "\n".join(lines)
 
 
-def fetch_train_data(client: TrenitaliaClient, config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    treno_cfg = config.get("treno", {})
+GLOBAL_NEXT_CHECK: Optional[float] = None
+
+
+def set_next_check(ts: float):
+    global GLOBAL_NEXT_CHECK
+    GLOBAL_NEXT_CHECK = ts
+
+
+def get_countdown_info() -> Dict[str, Any]:
+    global GLOBAL_NEXT_CHECK
+    if not GLOBAL_NEXT_CHECK:
+        return {"minuti": 0, "secondi": 0, "orario": "--:--:--", "testo": "Calcolo in corso... ⏳"}
+    rem = int(GLOBAL_NEXT_CHECK - time.time())
+    next_dt = get_now() + datetime.timedelta(seconds=max(0, rem))
+    ora_str = next_dt.strftime("%H:%M:%S")
+    if rem <= 0:
+        return {"minuti": 0, "secondi": 0, "orario": ora_str, "testo": "Controllo in corso adesso! 🔄"}
+    mins = rem // 60
+    secs = rem % 60
+    return {
+        "minuti": mins,
+        "secondi": secs,
+        "orario": ora_str,
+        "testo": f"alle <b>{ora_str}</b> (tra {mins} min e {secs} sec)"
+    }
+
+
+def ensure_user_profile(config: Dict[str, Any], user_id: str, user_name: str = "Utente") -> Dict[str, Any]:
+    utenti = config.setdefault("utenti", {})
+    s_id = str(user_id).strip()
+    if s_id not in utenti:
+        utenti[s_id] = {
+            "nome": user_name,
+            "creato_il": get_now().strftime("%Y-%m-%d %H:%M:%S"),
+            "treni": []
+        }
+    admin_id = str(config.get("sicurezza", {}).get("admin_chat_id", "512549882")).strip()
+    if s_id == admin_id and not utenti[s_id].get("treni") and config.get("treno"):
+        tr = config.get("treno")
+        t_id = f"{tr.get('numero')}_{tr.get('data_viaggio')}"
+        utenti[s_id]["treni"].append({
+            "id": t_id,
+            "numero": str(tr.get("numero", "757")),
+            "categoria": tr.get("categoria", "InterCityNotte"),
+            "stazione_partenza": tr.get("stazione_partenza", "Torino Porta Nuova"),
+            "id_partenza": tr.get("id_partenza", 830000219),
+            "stazione_arrivo": tr.get("stazione_arrivo", "Termoli"),
+            "id_arrivo": tr.get("id_arrivo", 830011019),
+            "data_viaggio": tr.get("data_viaggio", "2026-12-21"),
+            "orario_partenza_previsto": tr.get("orario_partenza_previsto", "20:50"),
+            "aggiunto_il": get_now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+    return utenti[s_id]
+
+
+def get_user_trains(config: Dict[str, Any], user_id: str) -> List[Dict[str, Any]]:
+    s_id = str(user_id).strip()
+    utenti = config.get("utenti", {})
+    if s_id in utenti:
+        return utenti[s_id].get("treni", [])
+    admin_id = str(config.get("sicurezza", {}).get("admin_chat_id", "512549882")).strip()
+    if s_id == admin_id and config.get("treno"):
+        tr = config.get("treno")
+        return [{
+            "id": f"{tr.get('numero')}_{tr.get('data_viaggio')}",
+            "numero": str(tr.get("numero", "757")),
+            "categoria": tr.get("categoria", "InterCityNotte"),
+            "stazione_partenza": tr.get("stazione_partenza", "Torino Porta Nuova"),
+            "id_partenza": tr.get("id_partenza", 830000219),
+            "stazione_arrivo": tr.get("stazione_arrivo", "Termoli"),
+            "id_arrivo": tr.get("id_arrivo", 830011019),
+            "data_viaggio": tr.get("data_viaggio", "2026-12-21"),
+            "orario_partenza_previsto": tr.get("orario_partenza_previsto", "20:50")
+        }]
+    return []
+
+
+def add_user_train(config: Dict[str, Any], user_id: str, train_info: Dict[str, Any], user_name: str = "Utente") -> bool:
+    prof = ensure_user_profile(config, user_id, user_name)
+    treni = prof.setdefault("treni", [])
+    t_id = f"{train_info.get('numero')}_{train_info.get('data_viaggio')}"
+    for t in treni:
+        if t.get("id") == t_id:
+            return False
+    train_info["id"] = t_id
+    train_info["aggiunto_il"] = get_now().strftime("%Y-%m-%d %H:%M:%S")
+    treni.append(train_info)
+    save_config(config)
+    return True
+
+
+def remove_user_train(config: Dict[str, Any], user_id: str, train_id: str) -> bool:
+    prof = ensure_user_profile(config, user_id)
+    treni = prof.get("treni", [])
+    new_treni = [t for t in treni if t.get("id") != train_id]
+    if len(new_treni) != len(treni):
+        prof["treni"] = new_treni
+        save_config(config)
+        return True
+    return False
+
+
+def fetch_train_data_for(client: TrenitaliaClient, treno_cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     data_viaggio = treno_cfg.get("data_viaggio", "2026-12-21")
     norm_date = normalize_date(str(data_viaggio)) or "2026-12-21"
     orario_dep = str(treno_cfg.get("orario_partenza_previsto", "20:50"))
@@ -243,65 +344,80 @@ def fetch_train_data(client: TrenitaliaClient, config: Dict[str, Any]) -> Option
     return None
 
 
+def fetch_train_data(client: TrenitaliaClient, config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    return fetch_train_data_for(client, config.get("treno", {}))
+
+
 def check_train(client: TrenitaliaClient, notifier: Notifier, config: Dict[str, Any], is_interactive: bool = False):
+    """
+    Controllo multi-utente e multi-treno.
+    Ogni utente riceve ESCLUSIVAMENTE gli aggiornamenti dei suoi treni monitorati.
+    """
     mon_cfg = config.get("monitoraggio", {})
     if not mon_cfg.get("attivo", True) and not is_interactive:
         notifier.log("Monitoraggio in PAUSA.", "[PAUSA]")
         return
 
-    treno_cfg = config.get("treno", {})
-    threshold = 10  # Posti in esaurimento se meno di 10
-    data_viaggio = treno_cfg.get("data_viaggio", "2026-12-21")
-    target_num = treno_cfg.get("numero", "757")
+    threshold = mon_cfg.get("avviso_sotto_soglia_posti", 10)
+    admin_id = str(config.get("sicurezza", {}).get("admin_chat_id", "512549882")).strip()
 
-    notifier.log(f"Verifica (ogni 30 min): {target_num} del {data_viaggio}...", "[INFO]")
-    train_data = fetch_train_data(client, config)
+    ensure_user_profile(config, admin_id)
+    utenti = config.get("utenti", {})
 
-    if not train_data:
-        notifier.log(f"Treno {target_num} non trovato al momento.", "[WARN]")
-        write_log("WARN: Treno non trovato.")
-        return
+    cd_info = get_countdown_info()
+    intervallo_min = mon_cfg.get("intervallo_minuti", 10)
+    train_cache: Dict[str, Any] = {}
 
-    print_train_summary(train_data)
-    save_state(train_data)
+    for u_id, u_data in list(utenti.items()):
+        treni = u_data.get("treni", [])
+        if not treni:
+            continue
 
-    # Rileva SOLO posti in esaurimento (meno di 10 posti rimasti)
-    esaurimento = []
-    for srv in train_data.get("servizi", []):
-        s_name = srv.get("servizio", "Posto")
-        for off in srv.get("offerte", []):
-            off_name = off.get("nome_offerta", "Tariffa")
-            st = off.get("stato", "")
-            pst = off.get("posti_disponibili", 0)
-            prz = f"{off.get('prezzo')} €" if off.get("prezzo") else "N/D"
+        for tr_cfg in treni:
+            t_num = str(tr_cfg.get("numero", "757")).strip()
+            d_viaggio = tr_cfg.get("data_viaggio", "2026-12-21")
+            cache_key = f"{t_num}_{d_viaggio}_{tr_cfg.get('id_partenza')}_{tr_cfg.get('id_arrivo')}"
 
-            if st == "SALEABLE" and 0 < pst < threshold:
-                esaurimento.append(f"• <b>{s_name} ({off_name}):</b> restano solo <b>{pst} posti!</b> ({prz})")
+            if cache_key in train_cache:
+                train_data = train_cache[cache_key]
+            else:
+                train_data = fetch_train_data_for(client, tr_cfg)
+                train_cache[cache_key] = train_data
 
-    # Costruisce il messaggio di tracciamento
-    summary_body = build_telegram_summary(train_data, data_viaggio)
+            if not train_data:
+                continue
 
-    # Se ci sono posti in esaurimento (< 10), li scrive ALL'INIZIO del messaggio
-    if esaurimento:
-        header = (
-            "🚨 <b>ATTENZIONE: POSTI IN ESAURIMENTO (MENO DI 10 RIMASTI)!</b>\n"
-            + "\n".join(esaurimento)
-            + "\n" + "—" * 30 + "\n\n"
-        )
-        full_message = header + summary_body
-        is_alert = True
-        write_log(f"ESAURIMENTO (<10): {len(esaurimento)} servizi sotto soglia.")
-    else:
-        full_message = summary_body
-        is_alert = False
+            esaurimento = []
+            for srv in train_data.get("servizi", []):
+                s_name = srv.get("servizio", "Posto")
+                for off in srv.get("offerte", []):
+                    off_name = off.get("nome_offerta", "Tariffa")
+                    st = off.get("stato", "")
+                    pst = off.get("posti_disponibili", 0)
+                    prz = f"{off.get('prezzo')} €" if off.get("prezzo") else "N/D"
 
-    # Invia il messaggio unico di tracciamento ogni mezz'ora
-    notifier.notify(
-        title=f"🚆 Monitor Treno {target_num}",
-        message=f"Tracciamento treno {target_num}",
-        is_alert=is_alert,
-        full_details_html=full_message
-    )
+                    if st == "SALEABLE" and 0 < pst < threshold:
+                        esaurimento.append(f"• <b>{s_name} ({off_name}):</b> restano solo <b>{pst} posti!</b> ({prz})")
+
+            summary_body = build_telegram_summary(train_data, d_viaggio)
+            footer = f"\n⏳ <i>Prossimo controllo automatico tra {intervallo_min} min ({cd_info['orario']})</i>"
+
+            if esaurimento:
+                header = (
+                    "🚨 <b>ATTENZIONE: POSTI IN ESAURIMENTO (MENO DI 10 RIMASTI)!</b>\n"
+                    + "\n".join(esaurimento)
+                    + "\n" + "—" * 30 + "\n\n"
+                )
+                full_message = header + summary_body + footer
+                is_alert = True
+                write_log(f"ESAURIMENTO (<10) per utente {u_id} su treno {t_num}: {len(esaurimento)} offerte sotto soglia.")
+            else:
+                full_message = summary_body + footer
+                is_alert = False
+
+            # Invia ESCLUSIVAMENTE all'utente proprietario di questo treno
+            notifier.send_single_user(u_id, full_message)
+            notifier.log(f"Notifica treno {t_num} inviata a utente {u_id}", "[INVIO]")
 
 
 # ====================================================================
@@ -349,47 +465,134 @@ def is_user_authorized(sender_id: str, config: Dict[str, Any]) -> bool:
 
 
 def get_main_menu_keyboard(config: Dict[str, Any], sender_id: str) -> Dict[str, Any]:
-    """Tastiera pulita per consultazione treni, senza pulsanti amministratore o inviti."""
-    is_active = config.get("monitoraggio", {}).get("attivo", True)
-    pause_text = "⏸️ Metti in Pausa" if is_active else "▶️ Riprendi"
-    pause_cmd = "cmd_pause" if is_active else "cmd_resume"
+    """Tastiera pulita con gestione treni individuali e countdown."""
+    user_trains = get_user_trains(config, sender_id)
+    n_trains = len(user_trains)
+    trains_label = f"📋 I Miei Treni ({n_trains})"
 
     kb = [
         [
-            {"text": "📊 Stato Treno Attuale", "callback_data": "cmd_status"},
-            {"text": "🔍 Scegli Giorno & Treno", "callback_data": "cmd_search_date"}
+            {"text": trains_label, "callback_data": "cmd_my_trains"},
+            {"text": "➕ Aggiungi Treno", "callback_data": "cmd_routes"}
         ],
         [
-            {"text": "🚉 Cambia Tratta / Ritorno", "callback_data": "cmd_routes"},
+            {"text": "⏳ Countdown Notifica", "callback_data": "cmd_countdown"},
             {"text": "⏱️ Frequenza", "callback_data": "cmd_frequency"}
         ],
         [
-            {"text": pause_text, "callback_data": pause_cmd},
-            {"text": "📡 Live & Ritardi", "callback_data": "cmd_live"}
+            {"text": "📡 Live & Ritardi", "callback_data": "cmd_live"},
+            {"text": "🔄 Aggiorna Menu", "callback_data": "cmd_menu"}
         ]
     ]
     return {"inline_keyboard": kb}
 
 
 def send_main_menu(token: str, chat_id: str, config: Dict[str, Any], extra_text: str = ""):
-    """Mostra la situazione attuale del treno e il menu normale dei pulsanti."""
-    tr = config.get("treno", {})
+    """Mostra la situazione del profilo individuale e i treni monitorati dall'utente."""
+    ensure_user_profile(config, chat_id)
+    user_trains = get_user_trains(config, chat_id)
     mon = config.get("monitoraggio", {})
-    stato_mon = "🟢 ATTIVO" if mon.get("attivo", True) else "🟡 IN PAUSA"
+    cd = get_countdown_info()
 
     msg = ""
     if extra_text:
         msg += f"{extra_text}\n\n"
 
     msg += (
-        "🎛️ <b>MONITOR TRENI</b>\n"
-        f"• <b>Tratta:</b> <code>{tr.get('stazione_partenza')} ➔ {tr.get('stazione_arrivo')}</code>\n"
-        f"• <b>Treno:</b> <code>{tr.get('categoria')} {tr.get('numero')}</code> (ore {tr.get('orario_partenza_previsto')})\n"
-        f"• <b>Data:</b> <code>{tr.get('data_viaggio')}</code>\n"
-        f"• <b>Monitoraggio:</b> {stato_mon} (ogni {mon.get('intervallo_minuti', 30)} min)\n\n"
+        "🎛️ <b>MONITOR TRENI PERSONALE</b>\n"
+        f"📋 <b>Treni nel tuo monitoraggio:</b> <b>{len(user_trains)}</b>\n\n"
+    )
+    if user_trains:
+        for t in user_trains[:3]:
+            msg += f"• 🚆 <b>{t.get('categoria', 'Treno')} {t.get('numero')}</b> (il {t.get('data_viaggio')} ore {t.get('orario_partenza_previsto', '--')}): <i>{t.get('stazione_partenza')} ➔ {t.get('stazione_arrivo')}</i>\n"
+        if len(user_trains) > 3:
+            msg += f"  <i>...e altri {len(user_trains) - 3} treni</i>\n"
+    else:
+        msg += "<i>Nessun treno in lista. Tocca ➕ Aggiungi Treno qui sotto!</i>\n"
+
+    msg += (
+        f"\n⏳ <b>Prossimo invio automatico:</b>\n👉 {cd['testo']}\n"
+        f"⏱️ <b>Frequenza:</b> ogni {mon.get('intervallo_minuti', 10)} min\n\n"
         "<i>Tocca un'opzione qui sotto:</i>"
     )
     send_tg_msg(token, chat_id, msg, get_main_menu_keyboard(config, chat_id))
+
+
+def send_my_trains_menu(token: str, chat_id: str, config: Dict[str, Any]):
+    """Mostra l'elenco dei treni monitorati dal singolo utente con opzioni di dettaglio ed eliminazione."""
+    user_trains = get_user_trains(config, chat_id)
+    if not user_trains:
+        txt = (
+            "📋 <b>I MIEI TRENI MONITORATI</b>\n\n"
+            "Non stai ancora monitorando nessun treno!\n\n"
+            "👉 Tocca <b>➕ Aggiungi Treno</b> per cercare una tratta e aggiungere un treno alla tua lista personale."
+        )
+        kb = [
+            [{"text": "➕ Aggiungi Treno", "callback_data": "cmd_routes"}],
+            [{"text": "🔙 Torna al Menu", "callback_data": "cmd_menu"}]
+        ]
+        send_tg_msg(token, chat_id, txt, {"inline_keyboard": kb})
+        return
+
+    txt = f"📋 <b>I TUOI TRENI IN MONITORAGGIO ({len(user_trains)})</b>\n\n"
+    buttons = []
+    for t in user_trains:
+        num = t.get("numero")
+        cat = t.get("categoria", "Treno")
+        data_v = t.get("data_viaggio")
+        dep = t.get("orario_partenza_previsto", "--")
+        orig = t.get("stazione_partenza", "")
+        dest = t.get("stazione_arrivo", "")
+        t_id = t.get("id", f"{num}_{data_v}")
+
+        txt += f"• 🚆 <b>{cat} {num}</b> ({data_v} ore {dep})\n  📍 <i>{orig} ➔ {dest}</i>\n\n"
+        buttons.append([
+            {"text": f"📊 Situazione {num} ({data_v})", "callback_data": f"view_train_{t_id}"},
+            {"text": f"🗑️ Rimuovi", "callback_data": f"del_train_{t_id}"}
+        ])
+
+    buttons.append([
+        {"text": "➕ Aggiungi un altro treno", "callback_data": "cmd_routes"},
+        {"text": "🔙 Torna al Menu", "callback_data": "cmd_menu"}
+    ])
+    send_tg_msg(token, chat_id, txt, {"inline_keyboard": buttons})
+
+
+def send_countdown_menu(token: str, chat_id: str, config: Dict[str, Any]):
+    """Mostra all'utente il countdown esatto per la prossima notifica automatica con opzione di controllo immediato."""
+    cd = get_countdown_info()
+    mon = config.get("monitoraggio", {})
+    intervallo_min = mon.get("intervallo_minuti", 10)
+    user_trains = get_user_trains(config, chat_id)
+
+    msg = (
+        "⏳ <b>COUNTDOWN PROSSIMA NOTIFICA AUTOMATICA</b>\n\n"
+        f"• <b>Prossimo invio programmato:</b>\n"
+        f"👉 <b>{cd['testo']}</b>\n\n"
+        f"• <b>Orario stimato invio:</b> <code>{cd['orario']}</code>\n"
+        f"• <b>Tempo rimanente:</b> <b>{cd['minuti']} min e {cd['secondi']} sec</b>\n"
+        f"• <b>Frequenza controlli:</b> ogni {intervallo_min} minuti\n\n"
+        f"📋 <b>I tuoi treni che riceveranno l'aggiornamento ({len(user_trains)}):</b>\n"
+    )
+    if user_trains:
+        for t in user_trains:
+            msg += f"  • 🚆 <b>{t.get('categoria', 'Treno')} {t.get('numero')}</b> ({t.get('data_viaggio')} ore {t.get('orario_partenza_previsto', '--')}): <i>{t.get('stazione_partenza')} ➔ {t.get('stazione_arrivo')}</i>\n"
+    else:
+        msg += "  <i>Nessun treno salvato nel tuo profilo. Tocca ➕ Aggiungi Treno per iniziare!</i>\n"
+
+    msg += "\n💡 <i>Tocca 🔄 Aggiorna per vedere i secondi scalare, oppure ⚡ Controlla Adesso per forzare un controllo istantaneo!</i>"
+
+    kb = [
+        [
+            {"text": "🔄 Aggiorna Countdown", "callback_data": "cmd_countdown"},
+            {"text": "⚡ Controlla Adesso", "callback_data": "cmd_check_now_user"}
+        ],
+        [
+            {"text": f"📋 I Miei Treni ({len(user_trains)})", "callback_data": "cmd_my_trains"},
+            {"text": "🔙 Torna al Menu", "callback_data": "cmd_menu"}
+        ]
+    ]
+    send_tg_msg(token, chat_id, msg, {"inline_keyboard": kb})
 
 
 def send_admin_menu(token: str, chat_id: str, config: Dict[str, Any], extra_text: str = ""):
@@ -428,7 +631,20 @@ def send_admin_menu(token: str, chat_id: str, config: Dict[str, Any], extra_text
 
 
 def send_routes_menu(token: str, chat_id: str, config: Dict[str, Any]):
-    tr = config.get("treno", {})
+    temp = USER_TEMP_DATA.get(chat_id, {})
+    if "stazione_partenza" in temp and "stazione_arrivo" in temp:
+        p_name = temp["stazione_partenza"]
+        a_name = temp["stazione_arrivo"]
+    else:
+        u_trains = get_user_trains(config, chat_id)
+        if u_trains:
+            p_name = u_trains[0].get("stazione_partenza")
+            a_name = u_trains[0].get("stazione_arrivo")
+        else:
+            tr = config.get("treno", {})
+            p_name = tr.get("stazione_partenza", "Torino Porta Nuova")
+            a_name = tr.get("stazione_arrivo", "Termoli")
+
     kb = [
         [
             {"text": "🚆 Torino ➔ Termoli", "callback_data": "set_route_torino_termoli"},
@@ -439,7 +655,7 @@ def send_routes_menu(token: str, chat_id: str, config: Dict[str, Any]):
             {"text": "🚅 Benevento ➔ Torino (Ritorno)", "callback_data": "set_route_benevento_torino"}
         ],
         [
-            {"text": "🔄 Inverti Direzione Attuale", "callback_data": "route_swap"}
+            {"text": "🔄 Inverti Direzione", "callback_data": "route_swap"}
         ],
         [
             {"text": "🗺️ Scegli Qualsiasi Altra Stazione d'Italia", "callback_data": "route_custom"}
@@ -449,9 +665,10 @@ def send_routes_menu(token: str, chat_id: str, config: Dict[str, Any]):
         ]
     ]
     txt = (
-        "🚉 <b>SELEZIONE TRATTA E DESTINAZIONE</b>\n\n"
-        f"📍 <b>Tratta attuale:</b> <code>{tr.get('stazione_partenza')} ➔ {tr.get('stazione_arrivo')}</code>\n\n"
-        "Scegli una tratta rapida oppure imposta <b>qualsiasi altra città d'Italia</b>:"
+        "➕ <b>AGGIUNGI UN TRENO AL TUO MONITORAGGIO</b>\n\n"
+        f"📍 <b>Tratta di partenza:</b> <code>{p_name} ➔ {a_name}</code>\n\n"
+        "Scegli una tratta rapida oppure imposta <b>qualsiasi altra città d'Italia</b>:\n"
+        "<i>(Ogni utente gestisce i propri treni in modo indipendente!)</i>"
     )
     send_tg_msg(token, chat_id, txt, {"inline_keyboard": kb})
 
@@ -478,12 +695,35 @@ def handle_search_date(client: TrenitaliaClient, token: str, chat_id: str, confi
         send_tg_msg(token, chat_id, "❌ <b>Data non valida!</b> Usa il formato <code>GG/MM/AAAA</code> (es. <code>21/12/2026</code>):")
         return
 
-    tr = config.get("treno", {})
-    orig_id = tr.get("id_partenza", 830000219)
-    dest_id = tr.get("id_arrivo", 830011019)
-    orig_name = tr.get("stazione_partenza", "Torino Porta Nuova")
-    dest_name = tr.get("stazione_arrivo", "Termoli")
+    temp = USER_TEMP_DATA.get(chat_id, {})
+    if "id_partenza" in temp and "id_arrivo" in temp:
+        orig_id = temp["id_partenza"]
+        dest_id = temp["id_arrivo"]
+        orig_name = temp.get("stazione_partenza", "Partenza")
+        dest_name = temp.get("stazione_arrivo", "Arrivo")
+    else:
+        u_trains = get_user_trains(config, chat_id)
+        if u_trains:
+            orig_id = u_trains[0].get("id_partenza", 830000219)
+            dest_id = u_trains[0].get("id_arrivo", 830011019)
+            orig_name = u_trains[0].get("stazione_partenza", "Torino Porta Nuova")
+            dest_name = u_trains[0].get("stazione_arrivo", "Termoli")
+        else:
+            tr = config.get("treno", {})
+            orig_id = tr.get("id_partenza", 830000219)
+            dest_id = tr.get("id_arrivo", 830011019)
+            orig_name = tr.get("stazione_partenza", "Torino Porta Nuova")
+            dest_name = tr.get("stazione_arrivo", "Termoli")
 
+    USER_TEMP_DATA[chat_id] = {
+        "id_partenza": orig_id,
+        "stazione_partenza": orig_name,
+        "id_arrivo": dest_id,
+        "stazione_arrivo": dest_name,
+        "data_viaggio": date_normalized
+    }
+
+    send_tg_msg(token, chat_id, f"🔍 <i>Cerco treni da <b>{orig_name}</b> a <b>{dest_name}</b> per il <b>{date_normalized}</b>...</i>")
     trains = client.get_day_trains_summary(orig_id, dest_id, date_normalized)
     if not trains:
         send_tg_msg(token, chat_id, f"ℹ️ Nessun treno trovato per il <b>{date_normalized}</b> ({orig_name} ➔ {dest_name}).", get_main_menu_keyboard(config, chat_id))
@@ -512,7 +752,7 @@ def handle_search_date(client: TrenitaliaClient, token: str, chat_id: str, confi
         inline_buttons.append([{"text": btn_label, "callback_data": cb_data}])
 
     inline_buttons.append([{"text": "🔙 Torna al Menu", "callback_data": "cmd_menu"}])
-    full_text = "\n".join(text_lines) + "\n\n👉 <i>Tocca il treno desiderato per avviare il monitoraggio:</i>"
+    full_text = "\n".join(text_lines) + "\n\n👉 <i>Tocca il treno desiderato per aggiungerlo al tuo monitoraggio:</i>"
     send_tg_msg(token, chat_id, full_text, {"inline_keyboard": inline_buttons})
 
 
@@ -566,6 +806,55 @@ def handle_telegram_events(
                         answer_tg_callback(token, cb_id)
                         send_main_menu(token, sender_id, config)
 
+                    elif data_val == "cmd_my_trains":
+                        answer_tg_callback(token, cb_id)
+                        send_my_trains_menu(token, sender_id, config)
+
+                    elif data_val == "cmd_countdown":
+                        answer_tg_callback(token, cb_id)
+                        send_countdown_menu(token, sender_id, config)
+
+                    elif data_val == "cmd_check_now_user":
+                        answer_tg_callback(token, cb_id, "Controllo in corso...")
+                        user_trains = get_user_trains(config, sender_id)
+                        if not user_trains:
+                            send_tg_msg(token, sender_id, "ℹ️ Non hai ancora nessun treno salvato nel tuo profilo.", get_main_menu_keyboard(config, sender_id))
+                        else:
+                            for tr_cfg in user_trains:
+                                t_data = fetch_train_data_for(client, tr_cfg)
+                                d_v = tr_cfg.get("data_viaggio", "2026-12-21")
+                                if t_data:
+                                    send_tg_msg(token, sender_id, f"⚡ <b>CONTROLLO IMMEDIATO ESEGUITO:</b>\n\n{build_telegram_summary(t_data, d_v)}")
+                                else:
+                                    send_tg_msg(token, sender_id, f"❌ Dati non disponibili al momento per il treno {tr_cfg.get('numero')} ({d_v}).")
+                            send_countdown_menu(token, sender_id, config)
+
+                    elif data_val.startswith("view_train_"):
+                        t_id = data_val.replace("view_train_", "")
+                        answer_tg_callback(token, cb_id, "Recupero dettagli...")
+                        user_trains = get_user_trains(config, sender_id)
+                        target_train = next((t for t in user_trains if t.get("id") == t_id), None)
+                        if not target_train:
+                            send_tg_msg(token, sender_id, "❌ Treno non trovato nella tua lista.", get_main_menu_keyboard(config, sender_id))
+                        else:
+                            t_data = fetch_train_data_for(client, target_train)
+                            d_v = target_train.get("data_viaggio", "2026-12-21")
+                            if t_data:
+                                kb_v = [
+                                    [{"text": "🗑️ Rimuovi questo treno", "callback_data": f"del_train_{t_id}"}],
+                                    [{"text": "📋 I Miei Treni", "callback_data": "cmd_my_trains"}, {"text": "🔙 Torna al Menu", "callback_data": "cmd_menu"}]
+                                ]
+                                send_tg_msg(token, sender_id, build_telegram_summary(t_data, d_v), {"inline_keyboard": kb_v})
+                            else:
+                                send_tg_msg(token, sender_id, f"❌ Dati non disponibili al momento per il treno {target_train.get('numero')}.", get_main_menu_keyboard(config, sender_id))
+
+                    elif data_val.startswith("del_train_"):
+                        t_id = data_val.replace("del_train_", "")
+                        answer_tg_callback(token, cb_id, "Treno rimosso!")
+                        remove_user_train(config, sender_id, t_id)
+                        send_tg_msg(token, sender_id, "🗑️ <b>Treno rimosso dal tuo monitoraggio personale!</b>")
+                        send_my_trains_menu(token, sender_id, config)
+
                     elif data_val == "cmd_admin_menu":
                         answer_tg_callback(token, cb_id)
                         if is_admin(sender_id, config):
@@ -574,54 +863,109 @@ def handle_telegram_events(
                             send_main_menu(token, sender_id, config)
 
                     elif data_val == "cmd_status":
-                        answer_tg_callback(token, cb_id, "Recupero situazione treno...")
-                        train_data = fetch_train_data(client, config)
-                        data_v = config.get("treno", {}).get("data_viaggio", "2026-12-21")
-                        if train_data:
-                            send_tg_msg(token, sender_id, build_telegram_summary(train_data, data_v), get_main_menu_keyboard(config, sender_id))
+                        answer_tg_callback(token, cb_id, "Recupero situazione...")
+                        user_trains = get_user_trains(config, sender_id)
+                        if not user_trains:
+                            send_tg_msg(token, sender_id, "ℹ️ Nessun treno nel tuo profilo. Tocca ➕ Aggiungi Treno per iniziare!", get_main_menu_keyboard(config, sender_id))
                         else:
-                            send_tg_msg(token, sender_id, "❌ Impossibile recuperare i dati al momento.", get_main_menu_keyboard(config, sender_id))
+                            for tr_cfg in user_trains:
+                                t_data = fetch_train_data_for(client, tr_cfg)
+                                d_v = tr_cfg.get("data_viaggio", "2026-12-21")
+                                if t_data:
+                                    send_tg_msg(token, sender_id, build_telegram_summary(t_data, d_v))
+                            send_main_menu(token, sender_id, config)
 
                     elif data_val == "cmd_routes":
                         answer_tg_callback(token, cb_id)
                         send_routes_menu(token, sender_id, config)
 
                     elif data_val.startswith("set_route_"):
-                        answer_tg_callback(token, cb_id, "Tratta aggiornata!")
                         r_key = data_val.replace("set_route_", "")
                         if r_key in TRATTE_PRESET:
                             route_info = TRATTE_PRESET[r_key]
-                            config["treno"]["stazione_partenza"] = route_info["partenza"]
-                            config["treno"]["id_partenza"] = route_info["id_partenza"]
-                            config["treno"]["stazione_arrivo"] = route_info["arrivo"]
-                            config["treno"]["id_arrivo"] = route_info["id_arrivo"]
-                            save_config(config)
-                            save_state({})
-
-                            txt = (
-                                f"✅ <b>Tratta impostata:</b> {route_info['label']}!\n\n"
-                                "👉 Tocca <b>🔍 Scegli Giorno & Treno</b> per visualizzare tutti i treni su questa tratta."
+                            USER_TEMP_DATA[sender_id] = {
+                                "id_partenza": route_info["id_partenza"],
+                                "stazione_partenza": route_info["partenza"],
+                                "id_arrivo": route_info["id_arrivo"],
+                                "stazione_arrivo": route_info["arrivo"]
+                            }
+                            answer_tg_callback(token, cb_id, f"Tratta: {route_info['label']}")
+                            USER_STATES[sender_id] = "WAITING_DATE"
+                            date_kb = {
+                                "inline_keyboard": [
+                                    [
+                                        {"text": "📅 21/12/2026", "callback_data": "date_2026-12-21"},
+                                        {"text": "📅 22/12/2026", "callback_data": "date_2026-12-22"}
+                                    ],
+                                    [
+                                        {"text": "📅 23/12/2026", "callback_data": "date_2026-12-23"},
+                                        {"text": "📅 28/12/2026", "callback_data": "date_2026-12-28"}
+                                    ],
+                                    [
+                                        {"text": "📅 06/01/2027", "callback_data": "date_2027-01-06"},
+                                        {"text": "🔙 Torna alle Tratte", "callback_data": "cmd_routes"}
+                                    ]
+                                ]
+                            }
+                            send_tg_msg(
+                                token,
+                                sender_id,
+                                f"✅ <b>Tratta selezionata:</b> <code>{route_info['label']}</code>\n\n"
+                                "📅 <b>Ora scegli la data di viaggio:</b>\n"
+                                "Tocca una data rapida o scrivi la data in chat (es: <code>21/12/2026</code> o <code>28/12/2026</code>):",
+                                date_kb
                             )
-                            send_tg_msg(token, sender_id, txt, get_main_menu_keyboard(config, sender_id))
 
                     elif data_val == "route_swap":
-                        answer_tg_callback(token, cb_id, "Direzione invertita!")
-                        tr = config.get("treno", {})
-                        p_name, a_name = tr.get("stazione_partenza"), tr.get("stazione_arrivo")
-                        p_id, a_id = tr.get("id_partenza"), tr.get("id_arrivo")
-
-                        config["treno"]["stazione_partenza"] = a_name
-                        config["treno"]["id_partenza"] = a_id
-                        config["treno"]["stazione_arrivo"] = p_name
-                        config["treno"]["id_arrivo"] = p_id
-                        save_config(config)
-                        save_state({})
-
+                        curr_route = USER_TEMP_DATA.get(sender_id, {})
+                        if not curr_route:
+                            u_trains = get_user_trains(config, sender_id)
+                            if u_trains:
+                                curr_route = {
+                                    "id_partenza": u_trains[0].get("id_partenza", 830000219),
+                                    "stazione_partenza": u_trains[0].get("stazione_partenza", "Torino Porta Nuova"),
+                                    "id_arrivo": u_trains[0].get("id_arrivo", 830011019),
+                                    "stazione_arrivo": u_trains[0].get("stazione_arrivo", "Termoli")
+                                }
+                            else:
+                                tr = config.get("treno", {})
+                                curr_route = {
+                                    "id_partenza": tr.get("id_partenza", 830000219),
+                                    "stazione_partenza": tr.get("stazione_partenza", "Torino Porta Nuova"),
+                                    "id_arrivo": tr.get("id_arrivo", 830011019),
+                                    "stazione_arrivo": tr.get("stazione_arrivo", "Termoli")
+                                }
+                        USER_TEMP_DATA[sender_id] = {
+                            "id_partenza": curr_route["id_arrivo"],
+                            "stazione_partenza": curr_route["stazione_arrivo"],
+                            "id_arrivo": curr_route["id_partenza"],
+                            "stazione_arrivo": curr_route["stazione_partenza"]
+                        }
+                        answer_tg_callback(token, cb_id, "Tratta invertita!")
+                        swapped = USER_TEMP_DATA[sender_id]
+                        USER_STATES[sender_id] = "WAITING_DATE"
+                        date_kb = {
+                            "inline_keyboard": [
+                                [
+                                    {"text": "📅 21/12/2026", "callback_data": "date_2026-12-21"},
+                                    {"text": "📅 22/12/2026", "callback_data": "date_2026-12-22"}
+                                ],
+                                [
+                                    {"text": "📅 28/12/2026", "callback_data": "date_2026-12-28"},
+                                    {"text": "📅 06/01/2027", "callback_data": "date_2027-01-06"}
+                                ],
+                                [
+                                    {"text": "🔙 Torna alle Tratte", "callback_data": "cmd_routes"}
+                                ]
+                            ]
+                        }
                         send_tg_msg(
                             token,
                             sender_id,
-                            f"🔄 <b>Tratta Invertita:</b> <b>{a_name} ➔ {p_name}</b>\n\nTocca <b>🔍 Scegli Giorno & Treno</b> per aggiornare i treni.",
-                            get_main_menu_keyboard(config, sender_id)
+                            f"🔄 <b>Tratta Invertita:</b> <code>{swapped['stazione_partenza']} ➔ {swapped['stazione_arrivo']}</code>\n\n"
+                            "📅 <b>Ora scegli la data di viaggio:</b>\n"
+                            "Tocca una data rapida o scrivi la data in chat (es: <code>28/12/2026</code>):",
+                            date_kb
                         )
 
                     elif data_val == "route_custom":
@@ -657,25 +1001,34 @@ def handle_telegram_events(
                         d_name = parts[1]
 
                         temp = USER_TEMP_DATA.get(sender_id, {})
-                        orig_name = temp.get("stazione_partenza", config["treno"]["stazione_partenza"])
-                        orig_id = temp.get("id_partenza", config["treno"]["id_partenza"])
+                        temp["id_arrivo"] = d_id
+                        temp["stazione_arrivo"] = d_name
+                        USER_TEMP_DATA[sender_id] = temp
+                        USER_STATES[sender_id] = "WAITING_DATE"
 
-                        config["treno"]["stazione_partenza"] = orig_name
-                        config["treno"]["id_partenza"] = orig_id
-                        config["treno"]["stazione_arrivo"] = d_name
-                        config["treno"]["id_arrivo"] = d_id
-                        save_config(config)
-                        save_state({})
-
-                        USER_STATES.pop(sender_id, None)
-                        USER_TEMP_DATA.pop(sender_id, None)
-
-                        success_txt = (
-                            "🎉 <b>NUOVA TRATTA CONFIGURATA!</b>\n\n"
-                            f"📍 <b>{orig_name} ➔ {d_name}</b>\n\n"
-                            "👉 Tocca <b>🔍 Scegli Giorno & Treno</b> per vedere le soluzioni disponibili!"
+                        date_kb = {
+                            "inline_keyboard": [
+                                [
+                                    {"text": "📅 21/12/2026", "callback_data": "date_2026-12-21"},
+                                    {"text": "📅 22/12/2026", "callback_data": "date_2026-12-22"}
+                                ],
+                                [
+                                    {"text": "📅 28/12/2026", "callback_data": "date_2026-12-28"},
+                                    {"text": "📅 06/01/2027", "callback_data": "date_2027-01-06"}
+                                ],
+                                [
+                                    {"text": "🔙 Torna alle Tratte", "callback_data": "cmd_routes"}
+                                ]
+                            ]
+                        }
+                        send_tg_msg(
+                            token,
+                            sender_id,
+                            f"🎉 <b>Tratta configurata:</b> <code>{temp.get('stazione_partenza')} ➔ {d_name}</code>\n\n"
+                            "📅 <b>Ora scegli la data di viaggio:</b>\n"
+                            "Tocca una data rapida o scrivi la data in chat (es: <code>21/12/2026</code>):",
+                            date_kb
                         )
-                        send_tg_msg(token, sender_id, success_txt, get_main_menu_keyboard(config, sender_id))
 
                     elif data_val == "cmd_create_invite":
                         answer_tg_callback(token, cb_id)
@@ -765,7 +1118,7 @@ def handle_telegram_events(
                         handle_search_date(client, token, sender_id, config, chosen_date)
 
                     elif data_val.startswith("sel|") or data_val.startswith("sel:"):
-                        answer_tg_callback(token, cb_id, "Treno impostato!")
+                        answer_tg_callback(token, cb_id, "Aggiunta in corso...")
                         if "|" in data_val:
                             parts = data_val.split("|")
                             num = parts[1]
@@ -782,50 +1135,83 @@ def handle_telegram_events(
                         if not re.match(r"^\d{4}-\d{2}-\d{2}$", d_str):
                             d_str = normalize_date(d_str) or "2026-12-21"
 
-                        config["treno"]["numero"] = num
-                        config["treno"]["data_viaggio"] = d_str
-                        config["treno"]["orario_partenza_previsto"] = dep
-                        config["treno"]["categoria"] = "InterCityNotte" if "ICN" in cat or num in ("757", "755") else ("Frecciarossa" if "Frec" in cat else "Treno")
-                        save_config(config)
-                        save_state({})
+                        temp = USER_TEMP_DATA.get(sender_id, {})
+                        orig_name = temp.get("stazione_partenza", "Torino Porta Nuova")
+                        orig_id = temp.get("id_partenza", 830000219)
+                        dest_name = temp.get("stazione_arrivo", "Termoli")
+                        dest_id = temp.get("id_arrivo", 830011019)
 
-                        write_log(f"CONFIG: Impostato treno {num} per il {d_str} ore {dep}")
+                        cat_full = "InterCityNotte" if "ICN" in cat or num in ("757", "755", "756") else ("Frecciarossa" if "Frec" in cat else ("Intercity" if "IC" in cat else "Treno"))
 
-                        train_data = fetch_train_data(client, config)
-                        if train_data:
-                            save_state(train_data)
-                            full_msg = (
-                                f"✅ <b>TRENO SELEZIONATO CON SUCCESSO!</b>\n\n"
-                                f"{build_telegram_summary(train_data, d_str)}\n\n"
-                                f"🔔 <i>Monitoraggio ATTIVO ogni {config.get('monitoraggio', {}).get('intervallo_minuti', 30)} min!</i>"
-                            )
+                        new_train = {
+                            "numero": str(num),
+                            "categoria": cat_full,
+                            "stazione_partenza": orig_name,
+                            "id_partenza": orig_id,
+                            "stazione_arrivo": dest_name,
+                            "id_arrivo": dest_id,
+                            "data_viaggio": d_str,
+                            "orario_partenza_previsto": dep
+                        }
+
+                        added = add_user_train(config, sender_id, new_train, sender_name)
+                        if is_admin(sender_id, config):
+                            config["treno"].update(new_train)
+                            save_config(config)
+
+                        write_log(f"CONFIG: Utente {sender_id} ({sender_name}) ha aggiunto treno {num} per il {d_str} ore {dep}")
+
+                        train_data = fetch_train_data_for(client, new_train)
+                        user_trains_count = len(get_user_trains(config, sender_id))
+
+                        if added:
+                            msg_head = "🎉 <b>TRENO AGGIUNTO AL TUO MONITORAGGIO!</b>\n\n"
                         else:
-                            full_msg = (
-                                f"✅ <b>TRENO SELEZIONATO!</b>\n\n"
-                                f"• <b>Treno:</b> {config['treno']['categoria']} {num}\n"
-                                f"• <b>Data:</b> <code>{d_str}</code> (ore {dep})\n"
-                                f"• <b>Monitoraggio:</b> ATTIVO ogni {config.get('monitoraggio', {}).get('intervallo_minuti', 30)} min."
-                            )
-                        send_tg_msg(token, sender_id, full_msg, get_main_menu_keyboard(config, sender_id))
+                            msg_head = "ℹ️ <b>QUESTO TRENO È GIÀ PRESENTE NELLA TUA LISTA!</b>\n\n"
+
+                        msg_head += (
+                            f"• 🚆 <b>{cat_full} {num}</b> ({d_str} ore {dep})\n"
+                            f"• 📍 <i>{orig_name} ➔ {dest_name}</i>\n"
+                            f"• 📋 <b>Treni nel tuo profilo:</b> <b>{user_trains_count}</b>\n\n"
+                        )
+
+                        if train_data:
+                            full_msg = msg_head + build_telegram_summary(train_data, d_str)
+                        else:
+                            full_msg = msg_head + f"🔔 <i>Monitoraggio ATTIVO ogni {config.get('monitoraggio', {}).get('intervallo_minuti', 10)} min!</i>"
+
+                        kb_next = {
+                            "inline_keyboard": [
+                                [
+                                    {"text": f"📋 I Miei Treni ({user_trains_count})", "callback_data": "cmd_my_trains"},
+                                    {"text": "➕ Aggiungi Altro Treno", "callback_data": "cmd_routes"}
+                                ],
+                                [
+                                    {"text": "⏳ Countdown Notifica", "callback_data": "cmd_countdown"},
+                                    {"text": "🔙 Menu Principale", "callback_data": "cmd_menu"}
+                                ]
+                            ]
+                        }
+                        send_tg_msg(token, sender_id, full_msg, kb_next)
 
                     elif data_val == "cmd_frequency":
                         answer_tg_callback(token, cb_id)
                         freq_kb = {
                             "inline_keyboard": [
                                 [
-                                    {"text": "⏱️ Ogni 15 min", "callback_data": "freq_15"},
-                                    {"text": "⏱️ Ogni 30 min (Consigliato)", "callback_data": "freq_30"}
+                                    {"text": "⏱️ Ogni 10 min", "callback_data": "freq_10"},
+                                    {"text": "⏱️ Ogni 15 min", "callback_data": "freq_15"}
                                 ],
                                 [
-                                    {"text": "⏱️ Ogni 60 min", "callback_data": "freq_60"},
-                                    {"text": "⏱️ Ogni 10 min", "callback_data": "freq_10"}
+                                    {"text": "⏱️ Ogni 30 min (Consigliato)", "callback_data": "freq_30"},
+                                    {"text": "⏱️ Ogni 60 min", "callback_data": "freq_60"}
                                 ],
                                 [
                                     {"text": "🔙 Torna al Menu", "callback_data": "cmd_menu"}
                                 ]
                             ]
                         }
-                        curr = config.get("monitoraggio", {}).get("intervallo_minuti", 30)
+                        curr = config.get("monitoraggio", {}).get("intervallo_minuti", 10)
                         send_tg_msg(token, sender_id, f"⏱️ <b>Frequenza attuale:</b> ogni {curr} minuti.\nScegli il nuovo intervallo:", freq_kb)
 
                     elif data_val.startswith("freq_"):
@@ -844,25 +1230,28 @@ def handle_telegram_events(
                         send_tg_msg(token, sender_id, txt, get_main_menu_keyboard(config, sender_id))
 
                     elif data_val == "cmd_live":
-                        target_num = config.get("treno", {}).get("numero", "757")
-                        answer_tg_callback(token, cb_id, f"Interrogo live per {target_num}...")
-                        live = client.get_viaggiatreno_live(target_num)
-                        if live:
-                            vett = live.get("vettore", "Treno")
-                            rit = live.get("ritardo", 0)
-                            rit_icon = "🟢" if rit <= 0 else ("🟡" if rit <= 15 else "🔴")
-                            live_msg = (
-                                f"📡 <b>{vett.upper()} {live.get('numero')} IN TEMPO REALE</b>\n\n"
-                                f"Origine: {live.get('origine')}\n"
-                                f"Destinazione: {live.get('destinazione')}\n"
-                                f"{rit_icon} <b>Ritardo:</b> {rit} minuti\n"
-                                f"📍 <b>Ultimo Rilevamento:</b> {live.get('stazione_ultimo_rilevamento')} ({live.get('ora_ultimo_rilevamento', '--')})\n"
-                            )
-                            if live.get("binario_effettivo_partenza"):
-                                live_msg += f"🚉 <b>Binario:</b> {live.get('binario_effettivo_partenza')}\n"
-                        else:
-                            live_msg = f"ℹ️ Nessun dato in tempo reale disponibile per il treno {target_num} in questo momento (parte alle {config.get('treno', {}).get('orario_partenza_previsto', 'orario previsto')})."
-                        send_tg_msg(token, sender_id, live_msg, get_main_menu_keyboard(config, sender_id))
+                        user_trains = get_user_trains(config, sender_id)
+                        targets = [t.get("numero", "757") for t in user_trains] if user_trains else [config.get("treno", {}).get("numero", "757")]
+                        answer_tg_callback(token, cb_id, f"Interrogo live per {len(targets)} treno/i...")
+                        for target_num in targets:
+                            live = client.get_viaggiatreno_live(target_num)
+                            if live:
+                                vett = live.get("vettore", "Treno")
+                                rit = live.get("ritardo", 0)
+                                rit_icon = "🟢" if rit <= 0 else ("🟡" if rit <= 15 else "🔴")
+                                live_msg = (
+                                    f"📡 <b>{vett.upper()} {live.get('numero')} IN TEMPO REALE</b>\n\n"
+                                    f"Origine: {live.get('origine')}\n"
+                                    f"Destinazione: {live.get('destinazione')}\n"
+                                    f"{rit_icon} <b>Ritardo:</b> {rit} minuti\n"
+                                    f"📍 <b>Ultimo Rilevamento:</b> {live.get('stazione_ultimo_rilevamento')} ({live.get('ora_ultimo_rilevamento', '--')})\n"
+                                )
+                                if live.get("binario_effettivo_partenza"):
+                                    live_msg += f"🚉 <b>Binario Partenza:</b> {live.get('binario_effettivo_partenza')}\n"
+                            else:
+                                live_msg = f"ℹ️ Nessun dato in tempo reale attivo per il treno {target_num} al momento (il treno non è ancora partito o è previsto per una data futura)."
+                            send_tg_msg(token, sender_id, live_msg)
+                        send_main_menu(token, sender_id, config)
 
                     continue
 
@@ -1078,16 +1467,28 @@ def handle_telegram_events(
                         else:
                             send_tg_msg(token, sender_id, "ℹ️ Uso: <code>/autorizza ID_TELEGRAM</code>")
 
+                elif text_low in ("/countdown", "/prossimo", "countdown", "prossimo", "/tempo"):
+                    send_countdown_menu(token, sender_id, config)
+
+                elif text_low in ("/treni", "/mytrains", "treni"):
+                    send_my_trains_menu(token, sender_id, config)
+
                 elif text_low in ("/tratta", "tratta"):
                     send_routes_menu(token, sender_id, config)
 
                 elif text_low in ("/stato", "stato", "/controlla", "controlla", "prezzo"):
-                    train_data = fetch_train_data(client, config)
-                    data_v = config.get("treno", {}).get("data_viaggio", "2026-12-21")
-                    if train_data:
-                        send_tg_msg(token, sender_id, build_telegram_summary(train_data, data_v), get_main_menu_keyboard(config, sender_id))
+                    user_trains = get_user_trains(config, sender_id)
+                    if not user_trains:
+                        send_tg_msg(token, sender_id, "ℹ️ Non hai ancora nessun treno salvato.", get_main_menu_keyboard(config, sender_id))
                     else:
-                        send_tg_msg(token, sender_id, "❌ Impossibile recuperare i dati al momento.", get_main_menu_keyboard(config, sender_id))
+                        for tr_cfg in user_trains:
+                            t_data = fetch_train_data_for(client, tr_cfg)
+                            d_v = tr_cfg.get("data_viaggio", "2026-12-21")
+                            if t_data:
+                                send_tg_msg(token, sender_id, build_telegram_summary(t_data, d_v))
+                            else:
+                                send_tg_msg(token, sender_id, f"❌ Impossibile recuperare i dati per il treno {tr_cfg.get('numero')} ({d_v}).")
+                        send_main_menu(token, sender_id, config)
 
                 elif text_low.startswith("/cerca"):
                     parts = text.split(maxsplit=1)
@@ -1108,24 +1509,27 @@ def handle_telegram_events(
                     send_tg_msg(token, sender_id, "▶️ Monitoraggio <b>RIPRESO</b>!", get_main_menu_keyboard(config, sender_id))
 
                 elif text_low in ("/live", "live", "ritardo"):
-                    target_num = config.get("treno", {}).get("numero", "757")
-                    live = client.get_viaggiatreno_live(target_num)
-                    if live:
-                        vett = live.get("vettore", "Treno")
-                        rit = live.get("ritardo", 0)
-                        rit_icon = "🟢" if rit <= 0 else ("🟡" if rit <= 15 else "🔴")
-                        live_msg = (
-                            f"📡 <b>{vett.upper()} {live.get('numero')} IN TEMPO REALE</b>\n\n"
-                            f"Origine: {live.get('origine')}\n"
-                            f"Destinazione: {live.get('destinazione')}\n"
-                            f"{rit_icon} <b>Ritardo:</b> {rit} minuti\n"
-                            f"📍 <b>Ultimo Rilevamento:</b> {live.get('stazione_ultimo_rilevamento')} ({live.get('ora_ultimo_rilevamento', '--')})\n"
-                        )
-                        if live.get("binario_effettivo_partenza"):
-                            live_msg += f"🚉 <b>Binario:</b> {live.get('binario_effettivo_partenza')}\n"
-                    else:
-                        live_msg = f"ℹ️ Nessun dato in tempo reale disponibile per il treno {target_num} in questo momento."
-                    send_tg_msg(token, sender_id, live_msg, get_main_menu_keyboard(config, sender_id))
+                    user_trains = get_user_trains(config, sender_id)
+                    targets = [t.get("numero", "757") for t in user_trains] if user_trains else [config.get("treno", {}).get("numero", "757")]
+                    for target_num in targets:
+                        live = client.get_viaggiatreno_live(target_num)
+                        if live:
+                            vett = live.get("vettore", "Treno")
+                            rit = live.get("ritardo", 0)
+                            rit_icon = "🟢" if rit <= 0 else ("🟡" if rit <= 15 else "🔴")
+                            live_msg = (
+                                f"📡 <b>{vett.upper()} {live.get('numero')} IN TEMPO REALE</b>\n\n"
+                                f"Origine: {live.get('origine')}\n"
+                                f"Destinazione: {live.get('destinazione')}\n"
+                                f"{rit_icon} <b>Ritardo:</b> {rit} minuti\n"
+                                f"📍 <b>Ultimo Rilevamento:</b> {live.get('stazione_ultimo_rilevamento')} ({live.get('ora_ultimo_rilevamento', '--')})\n"
+                            )
+                            if live.get("binario_effettivo_partenza"):
+                                live_msg += f"🚉 <b>Binario:</b> {live.get('binario_effettivo_partenza')}\n"
+                        else:
+                            live_msg = f"ℹ️ Nessun dato in tempo reale disponibile per il treno {target_num} in questo momento."
+                        send_tg_msg(token, sender_id, live_msg)
+                    send_main_menu(token, sender_id, config)
 
                 else:
                     date_check = normalize_date(text)
@@ -1182,21 +1586,24 @@ def main():
         while True:
             config = load_config()
             notifier = Notifier(config)
-            intervallo_min = config.get("monitoraggio", {}).get("intervallo_minuti", 30)
+            intervallo_min = config.get("monitoraggio", {}).get("intervallo_minuti", 10)
             intervallo_sec = intervallo_min * 60
 
             print(f"\n[{get_now().strftime('%H:%M:%S')}] --- CONTROLLO #{ciclo} ---")
             check_train(client, notifier, config)
 
             prossimo = get_now() + datetime.timedelta(seconds=intervallo_sec)
+            sleep_start = time.time()
+            set_next_check(sleep_start + intervallo_sec)
             print(f"⏳ In ascolto su Telegram... Prossimo controllo alle {prossimo.strftime('%H:%M:%S')} (tra {intervallo_min} min)...")
 
-            sleep_start = time.time()
             last_event_check = 0
 
             while time.time() - sleep_start < intervallo_sec:
                 if time.time() - last_event_check >= 1.0:
                     config = load_config()
+                    intervallo_sec = config.get("monitoraggio", {}).get("intervallo_minuti", 10) * 60
+                    set_next_check(sleep_start + intervallo_sec)
                     telegram_offset = handle_telegram_events(client, config, telegram_offset)
                     last_event_check = time.time()
                 time.sleep(0.2)

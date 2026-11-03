@@ -1,7 +1,7 @@
 """
 Entry point per il deploy su Render.com (Free Tier)
 1. Avvia un leggerissimo server HTTP sulla porta $PORT per superare l'Health Check di Render.
-2. Esegue in background il Bot Telegram con pulsanti touch e il monitoraggio Trenitalia ogni 30 minuti 24/7.
+2. Esegue in background il Bot Telegram con pulsanti touch e il monitoraggio Trenitalia multi-utente 24/7.
 """
 
 import os
@@ -21,7 +21,9 @@ from monitor_treni import (
     check_train,
     handle_telegram_events,
     print_banner,
-    get_now
+    get_now,
+    set_next_check,
+    get_countdown_info
 )
 
 PORT = int(os.environ.get("PORT", 10000))
@@ -36,7 +38,12 @@ class RenderHealthHandler(BaseHTTPRequestHandler):
                 client = TrenitaliaClient()
                 notifier = Notifier(cfg)
                 check_train(client, notifier, cfg, is_interactive=True)
-                data = {"status": "SUCCESS", "message": "Controllo eseguito con successo e notifica inviata su Telegram!"}
+                cd = get_countdown_info()
+                data = {
+                    "status": "SUCCESS",
+                    "message": "Controllo eseguito con successo e notifica inviata su Telegram!",
+                    "prossimo_controllo": cd.get("testo", "")
+                }
             except Exception as e:
                 data = {"status": "ERROR", "error": str(e)}
             self.send_response(200)
@@ -44,6 +51,7 @@ class RenderHealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"))
             return
+
         self.send_response(200)
         self.send_header("Content-type", "application/json; charset=utf-8")
         self.end_headers()
@@ -51,15 +59,18 @@ class RenderHealthHandler(BaseHTTPRequestHandler):
             cfg = load_config()
             tr = cfg.get("treno", {})
             mon = cfg.get("monitoraggio", {})
+            cd = get_countdown_info()
             data = {
                 "status": "ONLINE",
-                "service": "Trenitalia Telegram Bot 24/7",
-                "treno": f"{tr.get('categoria', 'ICN')} {tr.get('numero', '757')}",
-                "tratta": f"{tr.get('stazione_partenza')} ➔ {tr.get('stazione_arrivo')}",
-                "data_viaggio": tr.get("data_viaggio"),
-                "frequenza_minuti": mon.get("intervallo_minuti", 30),
+                "service": "Trenitalia Telegram Bot 24/7 Multi-Utente",
+                "server_time": get_now().strftime("%Y-%m-%d %H:%M:%S"),
+                "prossimo_controllo": cd.get("testo", ""),
+                "orario_prossimo_controllo": cd.get("orario", ""),
+                "secondi_rimasti": cd.get("minuti", 0) * 60 + cd.get("secondi", 0),
+                "frequenza_minuti": mon.get("intervallo_minuti", 10),
                 "monitoraggio_attivo": mon.get("attivo", True),
-                "server_time": get_now().strftime("%Y-%m-%d %H:%M:%S")
+                "utenti_registrati": len(cfg.get("utenti", {})),
+                "treno_default": f"{tr.get('categoria', 'ICN')} {tr.get('numero', '757')} ({tr.get('stazione_partenza')} ➔ {tr.get('stazione_arrivo')})"
             }
         except Exception as e:
             data = {"status": "ONLINE", "error": str(e)}
@@ -119,28 +130,33 @@ def run_bot_daemon():
         except Exception:
             pass
 
+    intervallo_iniziale = config.get("monitoraggio", {}).get("intervallo_minuti", 10) * 60
+    set_next_check(time.time() + intervallo_iniziale)
+
     ciclo = 1
     while True:
         try:
             config = load_config()
             notifier = Notifier(config)
-            intervallo_min = config.get("monitoraggio", {}).get("intervallo_minuti", 30)
+            intervallo_min = config.get("monitoraggio", {}).get("intervallo_minuti", 10)
             intervallo_sec = intervallo_min * 60
 
             print(f"\n[{get_now().strftime('%H:%M:%S')}] --- CONTROLLO CLOUD #{ciclo} ---")
             check_train(client, notifier, config)
 
+            sleep_start = time.time()
+            set_next_check(sleep_start + intervallo_sec)
             prossimo = get_now() + datetime.timedelta(seconds=intervallo_sec)
             print(f"⏳ [CLOUD] Prossimo controllo alle {prossimo.strftime('%H:%M:%S')} (tra {intervallo_min} min). In ascolto su Telegram...")
 
-            sleep_start = time.time()
             last_event_check = 0
 
             # Ascolta i comandi e i pulsanti Telegram ogni secondo
             while time.time() - sleep_start < intervallo_sec:
                 if time.time() - last_event_check >= 1.0:
                     config = load_config()
-                    intervallo_sec = config.get("monitoraggio", {}).get("intervallo_minuti", 30) * 60
+                    intervallo_sec = config.get("monitoraggio", {}).get("intervallo_minuti", 10) * 60
+                    set_next_check(sleep_start + intervallo_sec)
                     telegram_offset = handle_telegram_events(client, config, telegram_offset)
                     last_event_check = time.time()
                 time.sleep(0.2)

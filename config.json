@@ -1,17 +1,7 @@
 {
-  "treno": {
-    "numero": "757",
-    "categoria": "InterCityNotte",
-    "stazione_partenza": "Torino Porta Nuova",
-    "id_partenza": 830000219,
-    "stazione_arrivo": "Termoli",
-    "id_arrivo": 830011019,
-    "data_viaggio": "2026-12-21",
-    "orario_partenza_previsto": "20:50"
-  },
   "monitoraggio": {
     "attivo": true,
-    "intervallo_minuti": 30,
+    "intervallo_minuti": 10,
     "notifica_ogni_controllo": true,
     "notifica_solo_su_variazioni": false,
     "avviso_sotto_soglia_posti": 10,
@@ -39,6 +29,50 @@
       }
     },
     "blocco_altri_utenti": false
+  },
+  "utenti": {
+    "512549882": {
+      "nome": "SiuM",
+      "treni": [
+        {
+          "id": "757_2026-12-21",
+          "numero": "757",
+          "categoria": "InterCityNotte",
+          "stazione_partenza": "Torino Porta Nuova",
+          "id_partenza": 830000219,
+          "stazione_arrivo": "Termoli",
+          "id_arrivo": 830011019,
+          "data_viaggio": "2026-12-21",
+          "orario_partenza_previsto": "20:50"
+        }
+      ]
+    },
+    "5372272659": {
+      "nome": "Gianpio",
+      "treni": [
+        {
+          "id": "716_2026-12-22",
+          "numero": "716",
+          "categoria": "Treno",
+          "stazione_partenza": "Torino Porta Nuova",
+          "id_partenza": 830000219,
+          "stazione_arrivo": "Benevento",
+          "id_arrivo": 830009999,
+          "data_viaggio": "2026-12-22",
+          "orario_partenza_previsto": "20:50"
+        }
+      ]
+    }
+  },
+  "treno": {
+    "numero": "757",
+    "categoria": "InterCityNotte",
+    "stazione_partenza": "Torino Porta Nuova",
+    "id_partenza": 830000219,
+    "stazione_arrivo": "Termoli",
+    "id_arrivo": 830011019,
+    "data_viaggio": "2026-12-21",
+    "orario_partenza_previsto": "20:50"
   },
   "notifiche_discord": {
     "abilitato": false,

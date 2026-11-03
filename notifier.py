@@ -123,6 +123,30 @@ class Notifier:
             self.log(f"Notifica Telegram inviata a {len(recipients)} utente/i autorizzato/i!", "[TELEGRAM]")
         return success
 
+    def send_single_user(self, chat_id: str, message: str) -> bool:
+        """Invia un messaggio Telegram a un singolo utente specifico (Direct Message)."""
+        if not self.tg_cfg.get("abilitato", False):
+            return False
+
+        token = os.environ.get("TELEGRAM_BOT_TOKEN") or self.tg_cfg.get("bot_token", "").strip()
+        if not token or "INSERISCI" in token:
+            return False
+
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        cid = str(chat_id).strip()
+        try:
+            r = requests.post(url, json={"chat_id": cid, "text": message, "parse_mode": "HTML"}, timeout=8)
+            if r.status_code == 200:
+                return True
+            else:
+                self.log(f"Errore invio a {cid}: {r.status_code} {r.text}", "[ERRORE]")
+                clean_text = re.sub(r"<[^>]+>", "", message)
+                r_plain = requests.post(url, json={"chat_id": cid, "text": clean_text}, timeout=8)
+                return r_plain.status_code == 200
+        except Exception as e:
+            self.log(f"Eccezione invio a {cid}: {e}", "[ERRORE]")
+            return False
+
     def send_discord(self, message: str) -> bool:
         """Invia un messaggio a un Webhook Discord."""
         if not self.dc_cfg.get("abilitato", False):
