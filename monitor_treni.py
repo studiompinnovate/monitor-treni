@@ -23,6 +23,15 @@ from typing import Dict, Any, Optional, List
 from trenitalia_client import TrenitaliaClient
 from notifier import Notifier
 
+try:
+    from zoneinfo import ZoneInfo
+    ROME_TZ = ZoneInfo("Europe/Rome")
+except Exception:
+    ROME_TZ = datetime.timezone(datetime.timedelta(hours=1))
+
+def get_now() -> datetime.datetime:
+    return datetime.datetime.now(ROME_TZ)
+
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -101,7 +110,7 @@ def save_state(state: Dict[str, Any]):
 
 
 def write_log(message: str):
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = get_now().strftime("%Y-%m-%d %H:%M:%S")
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"[{now_str}] {message}\n")
 
@@ -201,7 +210,7 @@ def build_telegram_summary(train_data: Dict[str, Any], travel_date: str) -> str:
                     else:
                         lines.append(f"   • <b>{off_name}:</b> 🟡 ⚠️ <b>SOLI {pst} POSTI!</b> ({prz})")
 
-    now_str = datetime.datetime.now().strftime("%H:%M:%S")
+    now_str = get_now().strftime("%H:%M:%S")
     lines.append(f"\n<i>Aggiornato alle ore {now_str}</i>")
     return "\n".join(lines)
 
@@ -275,7 +284,7 @@ def check_train(client: TrenitaliaClient, notifier: Notifier, config: Dict[str, 
     # Se ci sono posti in esaurimento (< 10), li scrive ALL'INIZIO del messaggio
     if esaurimento:
         header = (
-            "🚨 <b>ATTENZIONE: POSTI IN ESAURIMENTO (< 10 RIMASTI)!</b>\n"
+            "🚨 <b>ATTENZIONE: POSTI IN ESAURIMENTO (MENO DI 10 RIMASTI)!</b>\n"
             + "\n".join(esaurimento)
             + "\n" + "—" * 30 + "\n\n"
         )
@@ -453,7 +462,7 @@ def create_single_use_invite(config: Dict[str, Any], admin_name: str) -> str:
 
     code = f"inv_{secrets.token_hex(3)}"
     inviti[code] = {
-        "creato_il": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "creato_il": get_now().strftime("%Y-%m-%d %H:%M:%S"),
         "creato_da": admin_name,
         "usato": False,
         "usato_da": None
@@ -878,7 +887,7 @@ def handle_telegram_events(
                     if token_inv in inviti and not inviti[token_inv].get("usato"):
                         inviti[token_inv]["usato"] = True
                         inviti[token_inv]["usato_da"] = f"{sender_name} (ID: {sender_id})"
-                        inviti[token_inv]["data_uso"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        inviti[token_inv]["data_uso"] = get_now().strftime("%Y-%m-%d %H:%M:%S")
 
                         aut_list = sec.setdefault("utenti_autorizzati", [])
                         if sender_id not in aut_list:
@@ -1176,10 +1185,10 @@ def main():
             intervallo_min = config.get("monitoraggio", {}).get("intervallo_minuti", 30)
             intervallo_sec = intervallo_min * 60
 
-            print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] --- CONTROLLO #{ciclo} ---")
+            print(f"\n[{get_now().strftime('%H:%M:%S')}] --- CONTROLLO #{ciclo} ---")
             check_train(client, notifier, config)
 
-            prossimo = datetime.datetime.now() + datetime.timedelta(seconds=intervallo_sec)
+            prossimo = get_now() + datetime.timedelta(seconds=intervallo_sec)
             print(f"⏳ In ascolto su Telegram... Prossimo controllo alle {prossimo.strftime('%H:%M:%S')} (tra {intervallo_min} min)...")
 
             sleep_start = time.time()

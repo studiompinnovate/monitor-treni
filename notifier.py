@@ -9,11 +9,21 @@ Supporta:
 """
 
 import os
+import re
 import sys
 import subprocess
 import requests
 import datetime
 from typing import Dict, Any
+
+try:
+    from zoneinfo import ZoneInfo
+    ROME_TZ = ZoneInfo("Europe/Rome")
+except Exception:
+    ROME_TZ = datetime.timezone(datetime.timedelta(hours=1))
+
+def get_now() -> datetime.datetime:
+    return datetime.datetime.now(ROME_TZ)
 
 try:
     import winsound
@@ -30,7 +40,7 @@ class Notifier:
 
     def log(self, text: str, prefix: str = "[INFO]"):
         """Stampa un messaggio formattato con timestamp."""
-        now = datetime.datetime.now().strftime("%H:%M:%S")
+        now = get_now().strftime("%H:%M:%S")
         print(f"[{now}] {prefix} {text}")
 
     def send_sound_alert(self):
@@ -99,8 +109,15 @@ class Notifier:
                 r = requests.post(url, json={"chat_id": cid, "text": message, "parse_mode": "HTML"}, timeout=8)
                 if r.status_code == 200:
                     success = True
-            except Exception:
-                pass
+                else:
+                    self.log(f"Errore invio Telegram a {cid}: {r.status_code} {r.text}", "[ERRORE]")
+                    # Fallback plain text se Telegram rifiuta i tag HTML
+                    clean_text = re.sub(r"<[^>]+>", "", message)
+                    r_plain = requests.post(url, json={"chat_id": cid, "text": clean_text}, timeout=8)
+                    if r_plain.status_code == 200:
+                        success = True
+            except Exception as e:
+                self.log(f"Eccezione invio Telegram: {e}", "[ERRORE]")
 
         if success:
             self.log(f"Notifica Telegram inviata a {len(recipients)} utente/i autorizzato/i!", "[TELEGRAM]")
