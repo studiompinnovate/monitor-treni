@@ -141,8 +141,45 @@ class TrenitaliaClient:
                 continue
             seen_train_keys.add(key)
 
-            price_val = sol.get("price", {}).get("amount") if sol.get("price") else None
-            status = sol.get("status", "N/D")
+            # Calcolo rigoroso del prezzo reale sommando tutte le tratte/treni del viaggio
+            grids = item.get("grids", [])
+            legs_prices = []
+            is_all_legs_saleable = (sol.get("status") == "SALEABLE")
+
+            for g in grids:
+                valid_p = [
+                    o["price"]["amount"]
+                    for s in g.get("services", [])
+                    for o in s.get("offers", [])
+                    if o.get("status") == "SALEABLE"
+                    and o.get("price")
+                    and o["price"].get("amount") is not None
+                    and o["price"].get("amount") > 0
+                ]
+                if valid_p:
+                    legs_prices.append(min(valid_p))
+                else:
+                    is_all_legs_saleable = False
+                    legs_prices.append(None)
+
+            raw_bundle = sol.get("price", {}).get("amount") if sol.get("price") else None
+
+            # Se tutti i treni hanno posti acquistabili, il prezzo è la somma di ogni treno
+            if is_all_legs_saleable and all(p is not None for p in legs_prices) and legs_prices:
+                total_price = round(sum(legs_prices), 2)
+                breakdown_str = " + ".join(f"{p:.2f} €" for p in legs_prices)
+                status = "SALEABLE"
+                is_saleable = True
+            elif is_all_legs_saleable and raw_bundle and not grids:
+                total_price = round(raw_bundle, 2)
+                breakdown_str = f"{total_price:.2f} €"
+                status = "SALEABLE"
+                is_saleable = True
+            else:
+                total_price = None
+                breakdown_str = ""
+                status = "SOLD_OUT"
+                is_saleable = False
 
             parsed_trains.append({
                 "orario_partenza": dep_time,
@@ -153,8 +190,12 @@ class TrenitaliaClient:
                 "categoria_principale": trains[0].get("trainCategory", "Treno") if is_direct else trains[-1].get("trainCategory", "Treno"),
                 "diretto": is_direct,
                 "num_cambi": len(trains) - 1,
-                "prezzo_minimo": price_val,
+                "prezzo_minimo": total_price,
+                "dettaglio_prezzi": legs_prices,
+                "dettaglio_str": breakdown_str,
+                "prezzo_bundle": raw_bundle,
                 "stato": status,
+                "acquistabile": is_saleable,
                 "tutti_i_treni": trains
             })
 

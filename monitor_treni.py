@@ -745,13 +745,22 @@ def handle_search_date(client: TrenitaliaClient, token: str, chat_id: str, confi
         desc = t["descrizione_treni"]
         num = t["numero_treno_principale"]
         cat = t["categoria_principale"]
-        price = f"{t['prezzo_minimo']} €" if t['prezzo_minimo'] else "N/D"
-        cambi_str = "Diretto" if t["diretto"] else f"{t['num_cambi']} cambio/i"
+        is_saleable = t.get("acquistabile", False)
+        if is_saleable and t.get("prezzo_minimo"):
+            p_tot = f"{t['prezzo_minimo']:.2f} €"
+            if not t["diretto"] and t.get("dettaglio_str"):
+                price_label = f"da <b>{p_tot}</b> ({t['dettaglio_str']})"
+            else:
+                price_label = f"da <b>{p_tot}</b>"
+            btn_label = f"🎯 Seleziona {cat} {num} ({dep}) - {p_tot}"
+        else:
+            price_label = "<b>ESAURITO ❌</b>"
+            btn_label = f"🎯 {cat} {num} ({dep}) [Esaurito]"
 
-        text_lines.append(f"• <b>{dep} ➔ {arr}</b> | <b>{desc}</b> ({cambi_str}) da <b>{price}</b>")
+        cambi_str = "Diretto" if t["diretto"] else f"{t['num_cambi']} cambio/i"
+        text_lines.append(f"• <b>{dep} ➔ {arr}</b> | <b>{desc}</b> ({cambi_str}) | {price_label}")
 
         cb_data = f"sel|{num}|{dep}|{date_normalized}|{cat[:4]}"
-        btn_label = f"🎯 Seleziona {cat} {num} ({dep})"
         inline_buttons.append([{"text": btn_label, "callback_data": cb_data}])
 
     inline_buttons.append([{"text": "🔙 Torna al Menu", "callback_data": "cmd_menu"}])
@@ -871,13 +880,21 @@ def handle_find_best_deals(client: TrenitaliaClient, token: str, chat_id: str, c
         )
         return
 
-    with_prices = [t for t in trains if t.get("prezzo_minimo") is not None and t.get("prezzo_minimo") > 0]
+    # Filtra RIGOROSAMENTE solo i treni con posti disponibili (stato SALEABLE e prezzo valido)
+    with_prices = [
+        t for t in trains
+        if t.get("stato") == "SALEABLE"
+        and t.get("acquistabile", True)
+        and t.get("prezzo_minimo") is not None
+        and t.get("prezzo_minimo") > 0
+    ]
+    sold_out_count = sum(1 for t in trains if t.get("stato") == "SOLD_OUT" or not t.get("acquistabile", True))
 
     if not with_prices:
         txt_sold = (
             f"ℹ️ <b>Nessuna tariffa acquistabile trovata per il {date_normalized}</b>\n"
             f"📍 {orig_name} ➔ {dest_name}\n\n"
-            f"Trovati {len(trains)} treni ma i posti risultano al momento esauriti o non ancora messi in vendita."
+            f"Trovati {len(trains)} treni, ma tutti i posti risultano al momento esauriti (SOLD OUT) o non ancora messi in vendita."
         )
         send_tg_msg(token, chat_id, txt_sold, get_main_menu_keyboard(config, chat_id))
         return
@@ -886,11 +903,12 @@ def handle_find_best_deals(client: TrenitaliaClient, token: str, chat_id: str, c
     best_overall = with_prices[0]
     best_direct = next((t for t in with_prices if t.get("diretto")), None)
 
+    sub_info = f" ({sold_out_count} con posti esauriti esclusi)" if sold_out_count > 0 else ""
     txt_lines = [
         "🏷️ <b>MIGLIORI OFFERTE DEL GIORNO</b>",
         f"📍 <b>Tratta:</b> <code>{orig_name} ➔ {dest_name}</code>",
         f"📅 <b>Data:</b> <code>{date_normalized}</code>",
-        f"📊 Analizzate <b>{len(trains)} soluzioni</b> di viaggio.\n"
+        f"📊 Analizzate <b>{len(trains)} soluzioni</b>{sub_info}.\n"
     ]
 
     if best_overall.get("diretto"):
@@ -900,9 +918,11 @@ def handle_find_best_deals(client: TrenitaliaClient, token: str, chat_id: str, c
             f"🕒 Partenza <b>{best_overall['orario_partenza']}</b> ➔ Arrivo <b>{best_overall['orario_arrivo']}</b> ({best_overall['durata']}) | <b>Diretto (senza cambi)</b>\n"
         ])
     else:
+        p_tot = f"{best_overall['prezzo_minimo']:.2f} €"
+        bd = f" ({best_overall['dettaglio_str']})" if best_overall.get("dettaglio_str") else ""
         txt_lines.extend([
             "🥇 <b>MIGLIOR PREZZO ASSOLUTO:</b>",
-            f"💰 <b>{best_overall['prezzo_minimo']:.2f} €</b> — 🚆 <b>{best_overall['descrizione_treni']}</b>",
+            f"💰 <b>{p_tot}</b>{bd} — 🚆 <b>{best_overall['descrizione_treni']}</b>",
             f"🕒 Partenza <b>{best_overall['orario_partenza']}</b> ➔ Arrivo <b>{best_overall['orario_arrivo']}</b> ({best_overall['durata']}) | {best_overall['num_cambi']} cambio/i\n"
         ])
         if best_direct:
@@ -920,8 +940,9 @@ def handle_find_best_deals(client: TrenitaliaClient, token: str, chat_id: str, c
         med = medals[idx] if idx < len(medals) else "•"
         direct_badge = " [Diretto] ⭐" if t["diretto"] else f" [{t['num_cambi']} c.]"
         price_str = f"{t['prezzo_minimo']:.2f} €"
+        detail_note = f" <i>({t['dettaglio_str']})</i>" if not t["diretto"] and t.get("dettaglio_str") else ""
         txt_lines.append(
-            f"{med} <b>{price_str}</b> | <b>{t['orario_partenza']} ➔ {t['orario_arrivo']}</b> | {t['descrizione_treni']}{direct_badge}"
+            f"{med} <b>{price_str}</b>{detail_note} | <b>{t['orario_partenza']} ➔ {t['orario_arrivo']}</b> | {t['descrizione_treni']}{direct_badge}"
         )
 
         num = t["numero_treno_principale"]
