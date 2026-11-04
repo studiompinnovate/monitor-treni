@@ -98,10 +98,15 @@ class TrenitaliaClient:
         iso_start = f"{date_str}T04:00:00.000+01:00"
         all_solutions = []
 
-        for offset_val in [0, 10]:
+        for offset_val in [0, 10, 20]:
             data = self.get_solutions(origin_id, arrival_id, iso_start, offset=offset_val, limit=10)
             if data and "solutions" in data:
-                all_solutions.extend(data["solutions"])
+                sols = data["solutions"]
+                all_solutions.extend(sols)
+                if len(sols) < 10:
+                    break
+            else:
+                break
 
         parsed_trains = []
         seen_train_keys = set()

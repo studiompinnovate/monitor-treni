@@ -465,7 +465,7 @@ def is_user_authorized(sender_id: str, config: Dict[str, Any]) -> bool:
 
 
 def get_main_menu_keyboard(config: Dict[str, Any], sender_id: str) -> Dict[str, Any]:
-    """Tastiera pulita con gestione treni individuali e countdown."""
+    """Tastiera pulita con gestione treni individuali, offerte e countdown."""
     user_trains = get_user_trains(config, sender_id)
     n_trains = len(user_trains)
     trains_label = f"📋 I Miei Treni ({n_trains})"
@@ -476,11 +476,14 @@ def get_main_menu_keyboard(config: Dict[str, Any], sender_id: str) -> Dict[str, 
             {"text": "➕ Aggiungi Treno", "callback_data": "cmd_routes"}
         ],
         [
-            {"text": "⏳ Countdown Notifica", "callback_data": "cmd_countdown"},
-            {"text": "⏱️ Frequenza", "callback_data": "cmd_frequency"}
+            {"text": "🏷️ Miglior Offerta del Giorno", "callback_data": "cmd_best_deal"},
+            {"text": "⏳ Countdown Notifica", "callback_data": "cmd_countdown"}
         ],
         [
-            {"text": "📡 Live & Ritardi", "callback_data": "cmd_live"},
+            {"text": "⏱️ Frequenza", "callback_data": "cmd_frequency"},
+            {"text": "📡 Live & Ritardi", "callback_data": "cmd_live"}
+        ],
+        [
             {"text": "🔄 Aggiorna Menu", "callback_data": "cmd_menu"}
         ]
     ]
@@ -756,6 +759,188 @@ def handle_search_date(client: TrenitaliaClient, token: str, chat_id: str, confi
     send_tg_msg(token, chat_id, full_text, {"inline_keyboard": inline_buttons})
 
 
+def get_active_route_for_user(config: Dict[str, Any], chat_id: str) -> Dict[str, Any]:
+    """Determina la tratta attiva per l'utente (da selezione temporanea, treno monitorato o configurazione)."""
+    temp = USER_TEMP_DATA.get(chat_id, {})
+    if "id_partenza" in temp and "id_arrivo" in temp:
+        return {
+            "id_partenza": temp["id_partenza"],
+            "stazione_partenza": temp.get("stazione_partenza", "Torino Porta Nuova"),
+            "id_arrivo": temp["id_arrivo"],
+            "stazione_arrivo": temp.get("stazione_arrivo", "Termoli"),
+            "data_viaggio": temp.get("data_viaggio")
+        }
+    u_trains = get_user_trains(config, chat_id)
+    if u_trains:
+        return {
+            "id_partenza": u_trains[0].get("id_partenza", 830000219),
+            "stazione_partenza": u_trains[0].get("stazione_partenza", "Torino Porta Nuova"),
+            "id_arrivo": u_trains[0].get("id_arrivo", 830011019),
+            "stazione_arrivo": u_trains[0].get("stazione_arrivo", "Termoli"),
+            "data_viaggio": u_trains[0].get("data_viaggio", "2026-12-21")
+        }
+    tr = config.get("treno", {})
+    return {
+        "id_partenza": tr.get("id_partenza", 830000219),
+        "stazione_partenza": tr.get("stazione_partenza", "Torino Porta Nuova"),
+        "id_arrivo": tr.get("id_arrivo", 830011019),
+        "stazione_arrivo": tr.get("stazione_arrivo", "Termoli"),
+        "data_viaggio": tr.get("data_viaggio", "2026-12-21")
+    }
+
+
+def send_best_deal_date_prompt(token: str, chat_id: str, config: Dict[str, Any]):
+    """Chiede all'utente la data per cui trovare la miglior offerta economica."""
+    route = get_active_route_for_user(config, chat_id)
+    p_name = route["stazione_partenza"]
+    a_name = route["stazione_arrivo"]
+    suggested_date = route.get("data_viaggio", "2026-12-21")
+
+    USER_STATES[chat_id] = "WAITING_BESTDEAL_DATE"
+    USER_TEMP_DATA.setdefault(chat_id, {}).update({
+        "id_partenza": route["id_partenza"],
+        "stazione_partenza": p_name,
+        "id_arrivo": route["id_arrivo"],
+        "stazione_arrivo": a_name
+    })
+
+    buttons = []
+    if suggested_date:
+        buttons.append([
+            {"text": f"🏷️ Cerca per il tuo treno ({suggested_date})", "callback_data": f"bestdeal_{suggested_date}"}
+        ])
+
+    buttons.extend([
+        [
+            {"text": "📅 21/12/2026", "callback_data": "bestdeal_2026-12-21"},
+            {"text": "📅 22/12/2026", "callback_data": "bestdeal_2026-12-22"}
+        ],
+        [
+            {"text": "📅 23/12/2026", "callback_data": "bestdeal_2026-12-23"},
+            {"text": "📅 28/12/2026", "callback_data": "bestdeal_2026-12-28"}
+        ],
+        [
+            {"text": "📅 06/01/2027", "callback_data": "bestdeal_2027-01-06"},
+            {"text": "🚉 Cambia Tratta", "callback_data": "cmd_routes"}
+        ],
+        [
+            {"text": "🔙 Torna al Menu", "callback_data": "cmd_menu"}
+        ]
+    ])
+
+    txt = (
+        "🏷️ <b>RICERCA DELLA MIGLIOR OFFERTA DEL GIORNO</b>\n\n"
+        f"📍 <b>Tratta:</b> <code>{p_name} ➔ {a_name}</code>\n\n"
+        "Analizzo tutti i treni della giornata e ti mostro i <b>prezzi più bassi</b>, "
+        "il miglior prezzo assoluto e la soluzione diretta più conveniente!\n\n"
+        "👉 <i>Scegli una data rapida o scrivi la data in chat (es: <code>21/12/2026</code>):</i>"
+    )
+    send_tg_msg(token, chat_id, txt, {"inline_keyboard": buttons})
+
+
+def handle_find_best_deals(client: TrenitaliaClient, token: str, chat_id: str, config: Dict[str, Any], date_input: str):
+    """Scansiona tutti i treni della giornata e invia la classifica delle offerte migliori."""
+    date_normalized = normalize_date(date_input)
+    if not date_normalized:
+        send_tg_msg(token, chat_id, "❌ <b>Data non valida!</b> Usa il formato <code>GG/MM/AAAA</code> (es. <code>21/12/2026</code>):")
+        return
+
+    route = get_active_route_for_user(config, chat_id)
+    orig_id = route["id_partenza"]
+    dest_id = route["id_arrivo"]
+    orig_name = route["stazione_partenza"]
+    dest_name = route["stazione_arrivo"]
+
+    USER_TEMP_DATA.setdefault(chat_id, {}).update({
+        "id_partenza": orig_id,
+        "stazione_partenza": orig_name,
+        "id_arrivo": dest_id,
+        "stazione_arrivo": dest_name,
+        "data_viaggio": date_normalized
+    })
+
+    send_tg_msg(token, chat_id, f"🔍 <i>Scansione tariffe per <b>{orig_name} ➔ {dest_name}</b> il <b>{date_normalized}</b> in corso...</i>")
+    trains = client.get_day_trains_summary(orig_id, dest_id, date_normalized)
+
+    if not trains:
+        send_tg_msg(
+            token,
+            chat_id,
+            f"ℹ️ Nessun treno trovato per il <b>{date_normalized}</b> ({orig_name} ➔ {dest_name}).",
+            get_main_menu_keyboard(config, chat_id)
+        )
+        return
+
+    with_prices = [t for t in trains if t.get("prezzo_minimo") is not None and t.get("prezzo_minimo") > 0]
+
+    if not with_prices:
+        txt_sold = (
+            f"ℹ️ <b>Nessuna tariffa acquistabile trovata per il {date_normalized}</b>\n"
+            f"📍 {orig_name} ➔ {dest_name}\n\n"
+            f"Trovati {len(trains)} treni ma i posti risultano al momento esauriti o non ancora messi in vendita."
+        )
+        send_tg_msg(token, chat_id, txt_sold, get_main_menu_keyboard(config, chat_id))
+        return
+
+    with_prices.sort(key=lambda x: x["prezzo_minimo"])
+    best_overall = with_prices[0]
+    best_direct = next((t for t in with_prices if t.get("diretto")), None)
+
+    txt_lines = [
+        "🏷️ <b>MIGLIORI OFFERTE DEL GIORNO</b>",
+        f"📍 <b>Tratta:</b> <code>{orig_name} ➔ {dest_name}</code>",
+        f"📅 <b>Data:</b> <code>{date_normalized}</code>",
+        f"📊 Analizzate <b>{len(trains)} soluzioni</b> di viaggio.\n"
+    ]
+
+    if best_overall.get("diretto"):
+        txt_lines.extend([
+            "🥇 <b>MIGLIOR PREZZO ASSOLUTO (DIRETTO):</b>",
+            f"💰 <b>{best_overall['prezzo_minimo']:.2f} €</b> — 🚆 <b>{best_overall['descrizione_treni']}</b>",
+            f"🕒 Partenza <b>{best_overall['orario_partenza']}</b> ➔ Arrivo <b>{best_overall['orario_arrivo']}</b> ({best_overall['durata']}) | <b>Diretto (senza cambi)</b>\n"
+        ])
+    else:
+        txt_lines.extend([
+            "🥇 <b>MIGLIOR PREZZO ASSOLUTO:</b>",
+            f"💰 <b>{best_overall['prezzo_minimo']:.2f} €</b> — 🚆 <b>{best_overall['descrizione_treni']}</b>",
+            f"🕒 Partenza <b>{best_overall['orario_partenza']}</b> ➔ Arrivo <b>{best_overall['orario_arrivo']}</b> ({best_overall['durata']}) | {best_overall['num_cambi']} cambio/i\n"
+        ])
+        if best_direct:
+            txt_lines.extend([
+                "⭐ <b>MIGLIOR TRENO DIRETTO (SENZA CAMBI):</b>",
+                f"💰 <b>{best_direct['prezzo_minimo']:.2f} €</b> — 🚆 <b>{best_direct['descrizione_treni']}</b>",
+                f"🕒 Partenza <b>{best_direct['orario_partenza']}</b> ➔ Arrivo <b>{best_direct['orario_arrivo']}</b> ({best_direct['durata']}) | <b>Diretto</b>\n"
+            ])
+
+    txt_lines.append("📋 <b>TOP OFFERTE PIÙ CONVENIENTI:</b>")
+    medals = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+    buttons = []
+
+    for idx, t in enumerate(with_prices[:5]):
+        med = medals[idx] if idx < len(medals) else "•"
+        direct_badge = " [Diretto] ⭐" if t["diretto"] else f" [{t['num_cambi']} c.]"
+        price_str = f"{t['prezzo_minimo']:.2f} €"
+        txt_lines.append(
+            f"{med} <b>{price_str}</b> | <b>{t['orario_partenza']} ➔ {t['orario_arrivo']}</b> | {t['descrizione_treni']}{direct_badge}"
+        )
+
+        num = t["numero_treno_principale"]
+        dep = t["orario_partenza"]
+        cat = t["categoria_principale"]
+        cb_data = f"sel|{num}|{dep}|{date_normalized}|{cat[:4]}"
+        buttons.append([
+            {"text": f"🎯 Monitora a {price_str} ({dep} - {cat} {num})", "callback_data": cb_data}
+        ])
+
+    txt_lines.append("\n👉 <i>Tocca un treno per aggiungerlo subito al tuo monitoraggio:</i>")
+    buttons.append([
+        {"text": "📅 Altra Data", "callback_data": "cmd_best_deal"},
+        {"text": "🔙 Torna al Menu", "callback_data": "cmd_menu"}
+    ])
+
+    send_tg_msg(token, chat_id, "\n".join(txt_lines), {"inline_keyboard": buttons})
+
+
 def handle_telegram_events(
     client: TrenitaliaClient,
     config: Dict[str, Any],
@@ -813,6 +998,16 @@ def handle_telegram_events(
                     elif data_val == "cmd_countdown":
                         answer_tg_callback(token, cb_id)
                         send_countdown_menu(token, sender_id, config)
+
+                    elif data_val == "cmd_best_deal":
+                        answer_tg_callback(token, cb_id)
+                        send_best_deal_date_prompt(token, sender_id, config)
+
+                    elif data_val.startswith("bestdeal_"):
+                        chosen_date = data_val.replace("bestdeal_", "")
+                        answer_tg_callback(token, cb_id, "Ricerca migliori offerte...")
+                        USER_STATES.pop(sender_id, None)
+                        handle_find_best_deals(client, token, sender_id, config, chosen_date)
 
                     elif data_val == "cmd_check_now_user":
                         answer_tg_callback(token, cb_id, "Controllo in corso...")
@@ -1366,6 +1561,11 @@ def handle_telegram_events(
                     handle_search_date(client, token, sender_id, config, text)
                     continue
 
+                if USER_STATES.get(sender_id) == "WAITING_BESTDEAL_DATE":
+                    USER_STATES.pop(sender_id, None)
+                    handle_find_best_deals(client, token, sender_id, config, text)
+                    continue
+
                 # STATO: Scelta stazione partenza personalizzata
                 if USER_STATES.get(sender_id) == "WAIT_CUSTOM_ORIGIN":
                     results = client.search_station(text)
@@ -1475,6 +1675,9 @@ def handle_telegram_events(
 
                 elif text_low in ("/tratta", "tratta"):
                     send_routes_menu(token, sender_id, config)
+
+                elif text_low in ("/miglior_prezzo", "/migliore", "/offerta", "/offerte", "/best", "/economico", "miglior offerta", "miglior prezzo", "offerte", "offerta", "migliore"):
+                    send_best_deal_date_prompt(token, sender_id, config)
 
                 elif text_low in ("/stato", "stato", "/controlla", "controlla", "prezzo"):
                     user_trains = get_user_trains(config, sender_id)
